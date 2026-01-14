@@ -2,7 +2,7 @@
 
 ## Overview
 
-REST (Representational State Transfer) and GraphQL are two popular API architectural styles. REST is resource-based with fixed endpoints, while GraphQL provides a query language that allows clients to request exactly the data they need.
+REST (Representational State Transfer) and GraphQL are two popular API architectural styles. REST is resource-based with fixed endpoints, while GraphQL provides a query language that allows clients to request exactly the data they need. This guide covers building both with Express.js.
 
 ## REST vs GraphQL
 
@@ -46,833 +46,1035 @@ query {
 - **Multiple client types** (each can request what they need)
 - **Rapid feature development** (no backend changes for new data requirements)
 
-## Step-by-Step Implementation
+## Building REST APIs with Express
 
-### 1. Building a REST API with NestJS
+### 1. Complete Product API Example
 
 ```typescript
-// products/entities/product.entity.ts
-import {
-  Entity,
-  Column,
-  PrimaryGeneratedColumn,
-  ManyToOne,
-  CreateDateColumn,
-} from "typeorm";
-import { User } from "../../users/entities/user.entity";
-
-@Entity("products")
-export class Product {
-  @PrimaryGeneratedColumn("uuid")
+// src/models/product.model.ts
+export interface Product {
   id: string;
-
-  @Column()
   name: string;
-
-  @Column("text")
   description: string;
-
-  @Column("decimal", { precision: 10, scale: 2 })
   price: number;
-
-  @Column({ default: 0 })
   stock: number;
-
-  @Column({ nullable: true })
-  imageUrl: string;
-
-  @Column("simple-array")
+  imageUrl?: string;
   categories: string[];
-
-  @ManyToOne(() => User, { eager: true })
-  createdBy: User;
-
-  @CreateDateColumn()
+  createdById: string;
   createdAt: Date;
-
-  @Column({ default: true })
+  updatedAt: Date;
   isActive: boolean;
 }
 
-// products/dto/create-product.dto.ts
-import {
-  IsString,
-  IsNumber,
-  IsArray,
-  IsOptional,
-  IsUrl,
-  Min,
-} from "class-validator";
-import { ApiProperty } from "@nestjs/swagger";
-import { Type } from "class-transformer";
-
-export class CreateProductDto {
-  @ApiProperty()
-  @IsString()
+export interface CreateProductDto {
   name: string;
-
-  @ApiProperty()
-  @IsString()
   description: string;
-
-  @ApiProperty()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   price: number;
-
-  @ApiProperty()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   stock: number;
-
-  @ApiProperty({ required: false })
-  @IsOptional()
-  @IsUrl()
   imageUrl?: string;
-
-  @ApiProperty()
-  @IsArray()
-  @IsString({ each: true })
   categories: string[];
 }
 
-// products/dto/update-product.dto.ts
-import { PartialType } from "@nestjs/swagger";
-import { CreateProductDto } from "./create-product.dto";
-
-export class UpdateProductDto extends PartialType(CreateProductDto) {}
-
-// products/dto/filter-product.dto.ts
-import { IsOptional, IsString, IsNumber, Min, Max } from "class-validator";
-import { Type } from "class-transformer";
-import { ApiPropertyOptional } from "@nestjs/swagger";
-
-export class FilterProductDto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  search?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  category?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  minPrice?: number;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  maxPrice?: number;
-
-  @ApiPropertyOptional({ default: 1 })
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
-  page?: number = 1;
-
-  @ApiPropertyOptional({ default: 20 })
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Max(100)
-  @Type(() => Number)
-  limit?: number = 20;
-
-  @ApiPropertyOptional({ enum: ["price", "name", "createdAt"] })
-  @IsOptional()
-  @IsString()
-  sortBy?: "price" | "name" | "createdAt" = "createdAt";
-
-  @ApiPropertyOptional({ enum: ["ASC", "DESC"] })
-  @IsOptional()
-  @IsString()
-  order?: "ASC" | "DESC" = "DESC";
+export interface UpdateProductDto {
+  name?: string;
+  description?: string;
+  price?: number;
+  stock?: number;
+  imageUrl?: string;
+  categories?: string[];
+  isActive?: boolean;
 }
 
-// products/products.service.ts
-import { Injectable, NotFoundException } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, Like, Between } from "typeorm";
-import { Product } from "./entities/product.entity";
-import { CreateProductDto } from "./dto/create-product.dto";
-import { UpdateProductDto } from "./dto/update-product.dto";
-import { FilterProductDto } from "./dto/filter-product.dto";
+export interface FilterProductDto {
+  search?: string;
+  category?: string;
+  minPrice?: number;
+  maxPrice?: number;
+  page?: number;
+  limit?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}
+```
 
-@Injectable()
-export class ProductsService {
-  constructor(
-    @InjectRepository(Product)
-    private readonly productsRepository: Repository<Product>
-  ) {}
+```typescript
+// src/services/product.service.ts
+import { v4 as uuid } from 'uuid';
+import prisma from '../config/database';
+import { CreateProductDto, UpdateProductDto, FilterProductDto } from '../models/product.model';
+import { AppError } from '../utils/AppError';
 
-  async create(
-    createProductDto: CreateProductDto,
-    userId: string
-  ): Promise<Product> {
-    const product = this.productsRepository.create({
-      ...createProductDto,
-      createdBy: { id: userId } as any,
+export class ProductService {
+  async create(data: CreateProductDto, userId: string) {
+    const product = await prisma.product.create({
+      data: {
+        ...data,
+        id: uuid(),
+        createdById: userId,
+        isActive: true,
+      },
+      include: {
+        createdBy: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
     });
 
-    return this.productsRepository.save(product);
+    return product;
   }
 
-  async findAll(filterDto: FilterProductDto) {
-    const { search, category, minPrice, maxPrice, page, limit, sortBy, order } =
-      filterDto;
+  async findAll(filters: FilterProductDto) {
+    const {
+      search,
+      category,
+      minPrice,
+      maxPrice,
+      page = 1,
+      limit = 10,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+    } = filters;
 
-    const query = this.productsRepository
-      .createQueryBuilder("product")
-      .leftJoinAndSelect("product.createdBy", "user");
+    const skip = (page - 1) * limit;
 
-    // Apply filters
+    const where: any = { isActive: true };
+
     if (search) {
-      query.andWhere(
-        "(product.name LIKE :search OR product.description LIKE :search)",
-        { search: `%${search}%` }
-      );
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
     }
 
     if (category) {
-      query.andWhere("product.categories LIKE :category", {
-        category: `%${category}%`,
-      });
+      where.categories = { has: category };
     }
 
-    if (minPrice !== undefined) {
-      query.andWhere("product.price >= :minPrice", { minPrice });
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      where.price = {};
+      if (minPrice !== undefined) where.price.gte = minPrice;
+      if (maxPrice !== undefined) where.price.lte = maxPrice;
     }
 
-    if (maxPrice !== undefined) {
-      query.andWhere("product.price <= :maxPrice", { maxPrice });
-    }
-
-    // Apply sorting
-    query.orderBy(`product.${sortBy}`, order);
-
-    // Apply pagination
-    const skip = (page - 1) * limit;
-    query.skip(skip).take(limit);
-
-    const [data, total] = await query.getManyAndCount();
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { [sortBy]: sortOrder },
+        include: {
+          createdBy: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      }),
+      prisma.product.count({ where }),
+    ]);
 
     return {
-      data,
-      meta: {
-        total,
+      data: products,
+      pagination: {
         page,
         limit,
+        total,
         totalPages: Math.ceil(total / limit),
       },
     };
   }
 
-  async findOne(id: string): Promise<Product> {
-    const product = await this.productsRepository.findOne({
+  async findById(id: string) {
+    const product = await prisma.product.findUnique({
       where: { id },
-      relations: ["createdBy"],
+      include: {
+        createdBy: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
     });
 
     if (!product) {
-      throw new NotFoundException(`Product with ID ${id} not found`);
+      throw new AppError('Product not found', 404);
     }
 
     return product;
   }
 
-  async update(
-    id: string,
-    updateProductDto: UpdateProductDto
-  ): Promise<Product> {
-    const product = await this.findOne(id);
-    Object.assign(product, updateProductDto);
-    return this.productsRepository.save(product);
-  }
-
-  async remove(id: string): Promise<void> {
-    const product = await this.findOne(id);
-    await this.productsRepository.remove(product);
-  }
-}
-
-// products/products.controller.ts
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  Patch,
-  Param,
-  Delete,
-  Query,
-  UseGuards,
-  HttpCode,
-  HttpStatus,
-} from "@nestjs/common";
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-  ApiResponse,
-} from "@nestjs/swagger";
-import { ProductsService } from "./products.service";
-import { CreateProductDto } from "./dto/create-product.dto";
-import { UpdateProductDto } from "./dto/update-product.dto";
-import { FilterProductDto } from "./dto/filter-product.dto";
-import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
-import { Public } from "../auth/decorators/public.decorator";
-import { CurrentUser } from "../auth/decorators/current-user.decorator";
-
-@ApiTags("products")
-@Controller("products")
-export class ProductsController {
-  constructor(private readonly productsService: ProductsService) {}
-
-  @Post()
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: "Create a new product" })
-  @ApiResponse({ status: 201, description: "Product created successfully" })
-  create(
-    @Body() createProductDto: CreateProductDto,
-    @CurrentUser("id") userId: string
-  ) {
-    return this.productsService.create(createProductDto, userId);
-  }
-
-  @Get()
-  @Public()
-  @ApiOperation({ summary: "Get all products with filters" })
-  @ApiResponse({ status: 200, description: "Products retrieved successfully" })
-  findAll(@Query() filterDto: FilterProductDto) {
-    return this.productsService.findAll(filterDto);
-  }
-
-  @Get(":id")
-  @Public()
-  @ApiOperation({ summary: "Get product by ID" })
-  @ApiResponse({ status: 200, description: "Product found" })
-  @ApiResponse({ status: 404, description: "Product not found" })
-  findOne(@Param("id") id: string) {
-    return this.productsService.findOne(id);
-  }
-
-  @Patch(":id")
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: "Update product" })
-  update(@Param("id") id: string, @Body() updateProductDto: UpdateProductDto) {
-    return this.productsService.update(id, updateProductDto);
-  }
-
-  @Delete(":id")
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: "Delete product" })
-  remove(@Param("id") id: string) {
-    return this.productsService.remove(id);
-  }
-}
-```
-
-### 2. Building a GraphQL API with NestJS
-
-```bash
-# Install dependencies
-npm install @nestjs/graphql @nestjs/apollo @apollo/server graphql
-```
-
-```typescript
-// app.module.ts
-import { ApolloDriver, ApolloDriverConfig } from "@nestjs/apollo";
-import { GraphQLModule } from "@nestjs/graphql";
-import { join } from "path";
-
-@Module({
-  imports: [
-    GraphQLModule.forRoot<ApolloDriverConfig>({
-      driver: ApolloDriver,
-      autoSchemaFile: join(process.cwd(), "src/schema.gql"),
-      sortSchema: true,
-      playground: true,
-      context: ({ req }) => ({ req }),
-    }),
-    // ... other modules
-  ],
-})
-export class AppModule {}
-
-// products/models/product.model.ts
-import { ObjectType, Field, ID, Float } from "@nestjs/graphql";
-import { User } from "../../users/models/user.model";
-
-@ObjectType()
-export class Product {
-  @Field(() => ID)
-  id: string;
-
-  @Field()
-  name: string;
-
-  @Field()
-  description: string;
-
-  @Field(() => Float)
-  price: number;
-
-  @Field()
-  stock: number;
-
-  @Field({ nullable: true })
-  imageUrl?: string;
-
-  @Field(() => [String])
-  categories: string[];
-
-  @Field(() => User)
-  createdBy: User;
-
-  @Field()
-  createdAt: Date;
-
-  @Field()
-  isActive: boolean;
-}
-
-// products/dto/create-product.input.ts
-import { InputType, Field, Float } from "@nestjs/graphql";
-import { IsString, IsNumber, IsArray, Min } from "class-validator";
-
-@InputType()
-export class CreateProductInput {
-  @Field()
-  @IsString()
-  name: string;
-
-  @Field()
-  @IsString()
-  description: string;
-
-  @Field(() => Float)
-  @IsNumber()
-  @Min(0)
-  price: number;
-
-  @Field()
-  @IsNumber()
-  @Min(0)
-  stock: number;
-
-  @Field({ nullable: true })
-  imageUrl?: string;
-
-  @Field(() => [String])
-  @IsArray()
-  categories: string[];
-}
-
-// products/dto/filter-product.input.ts
-import { InputType, Field, Int } from "@nestjs/graphql";
-
-@InputType()
-export class FilterProductInput {
-  @Field({ nullable: true })
-  search?: string;
-
-  @Field({ nullable: true })
-  category?: string;
-
-  @Field(() => Int, { nullable: true, defaultValue: 1 })
-  page?: number;
-
-  @Field(() => Int, { nullable: true, defaultValue: 20 })
-  limit?: number;
-}
-
-// products/products.resolver.ts
-import {
-  Resolver,
-  Query,
-  Mutation,
-  Args,
-  ID,
-  ResolveField,
-  Parent,
-} from "@nestjs/graphql";
-import { UseGuards } from "@nestjs/common";
-import { ProductsService } from "./products.service";
-import { Product } from "./models/product.model";
-import { CreateProductInput } from "./dto/create-product.input";
-import { UpdateProductInput } from "./dto/update-product.input";
-import { FilterProductInput } from "./dto/filter-product.input";
-import { GqlAuthGuard } from "../auth/guards/gql-auth.guard";
-import { CurrentUser } from "../auth/decorators/current-user.decorator";
-
-@Resolver(() => Product)
-export class ProductsResolver {
-  constructor(private readonly productsService: ProductsService) {}
-
-  @Mutation(() => Product)
-  @UseGuards(GqlAuthGuard)
-  createProduct(
-    @Args("input") input: CreateProductInput,
-    @CurrentUser("id") userId: string
-  ) {
-    return this.productsService.create(input, userId);
-  }
-
-  @Query(() => [Product], { name: "products" })
-  findAll(@Args("filter", { nullable: true }) filter?: FilterProductInput) {
-    return this.productsService.findAll(filter || {});
-  }
-
-  @Query(() => Product, { name: "product" })
-  findOne(@Args("id", { type: () => ID }) id: string) {
-    return this.productsService.findOne(id);
-  }
-
-  @Mutation(() => Product)
-  @UseGuards(GqlAuthGuard)
-  updateProduct(
-    @Args("id", { type: () => ID }) id: string,
-    @Args("input") input: UpdateProductInput
-  ) {
-    return this.productsService.update(id, input);
-  }
-
-  @Mutation(() => Boolean)
-  @UseGuards(GqlAuthGuard)
-  async removeProduct(@Args("id", { type: () => ID }) id: string) {
-    await this.productsService.remove(id);
-    return true;
-  }
-
-  // Field resolver example
-  @ResolveField()
-  async similarProducts(@Parent() product: Product) {
-    // Logic to find similar products
-    return this.productsService.findSimilar(product.id, product.categories);
-  }
-}
-
-// GraphQL queries (client-side)
-/*
-# Create product
-mutation CreateProduct($input: CreateProductInput!) {
-  createProduct(input: $input) {
-    id
-    name
-    price
-  }
-}
-
-# Get products with filters
-query GetProducts($filter: FilterProductInput) {
-  products(filter: $filter) {
-    id
-    name
-    price
-    stock
-    categories
-    createdBy {
-      id
-      name
-    }
-  }
-}
-
-# Get single product
-query GetProduct($id: ID!) {
-  product(id: $id) {
-    id
-    name
-    description
-    price
-    stock
-    imageUrl
-    categories
-    createdBy {
-      id
-      firstName
-      lastName
-    }
-    similarProducts {
-      id
-      name
-      price
-    }
-  }
-}
-
-# Update product
-mutation UpdateProduct($id: ID!, $input: UpdateProductInput!) {
-  updateProduct(id: $id, input: $input) {
-    id
-    name
-    price
-  }
-}
-
-# Delete product
-mutation DeleteProduct($id: ID!) {
-  removeProduct(id: $id)
-}
-*/
-```
-
-### 3. GraphQL Subscriptions (Real-time)
-
-```typescript
-// products/products.resolver.ts
-import { Subscription } from "@nestjs/graphql";
-import { PubSub } from "graphql-subscriptions";
-
-const pubSub = new PubSub();
-
-@Resolver(() => Product)
-export class ProductsResolver {
-  // ... other resolvers
-
-  @Mutation(() => Product)
-  async createProduct(@Args("input") input: CreateProductInput) {
-    const product = await this.productsService.create(input);
-
-    // Publish event
-    pubSub.publish("productAdded", { productAdded: product });
+  async update(id: string, data: UpdateProductDto) {
+    const product = await prisma.product.update({
+      where: { id },
+      data: {
+        ...data,
+        updatedAt: new Date(),
+      },
+      include: {
+        createdBy: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
+    });
 
     return product;
   }
 
-  @Subscription(() => Product, {
-    name: "productAdded",
-  })
-  subscribeToProductAdded() {
-    return pubSub.asyncIterator("productAdded");
-  }
-
-  @Subscription(() => Product, {
-    name: "productUpdated",
-    filter: (payload, variables) => {
-      // Only send updates for specific categories
-      return payload.productUpdated.categories.includes(variables.category);
-    },
-  })
-  subscribeToProductUpdated(
-    @Args("category", { nullable: true }) category?: string
-  ) {
-    return pubSub.asyncIterator("productUpdated");
+  async delete(id: string) {
+    // Soft delete
+    await prisma.product.update({
+      where: { id },
+      data: { isActive: false },
+    });
   }
 }
 
-// Client-side subscription
-/*
-subscription OnProductAdded {
-  productAdded {
-    id
-    name
-    price
-  }
-}
-
-subscription OnProductUpdated($category: String) {
-  productUpdated(category: $category) {
-    id
-    name
-    price
-  }
-}
-*/
+export default new ProductService();
 ```
 
-### 4. DataLoader for N+1 Problem
-
 ```typescript
-// common/dataloader/dataloader.service.ts
-import DataLoader from "dataloader";
-import { Injectable, Scope } from "@nestjs/common";
-import { UsersService } from "../../users/users.service";
+// src/controllers/product.controller.ts
+import { Request, Response } from 'express';
+import productService from '../services/product.service';
+import { asyncHandler } from '../utils/asyncHandler';
 
-@Injectable({ scope: Scope.REQUEST })
-export class DataloaderService {
-  constructor(private readonly usersService: UsersService) {}
+export class ProductController {
+  create = asyncHandler(async (req: Request, res: Response) => {
+    const product = await productService.create(req.body, req.user!.id);
+    
+    res.status(201).json({
+      success: true,
+      data: product,
+    });
+  });
 
-  // User loader
-  readonly userLoader = new DataLoader<string, User>(async (userIds) => {
-    const users = await this.usersService.findByIds(userIds as string[]);
+  findAll = asyncHandler(async (req: Request, res: Response) => {
+    const filters = {
+      search: req.query.search as string,
+      category: req.query.category as string,
+      minPrice: req.query.minPrice ? parseFloat(req.query.minPrice as string) : undefined,
+      maxPrice: req.query.maxPrice ? parseFloat(req.query.maxPrice as string) : undefined,
+      page: req.query.page ? parseInt(req.query.page as string) : 1,
+      limit: req.query.limit ? parseInt(req.query.limit as string) : 10,
+      sortBy: req.query.sortBy as string,
+      sortOrder: req.query.sortOrder as 'asc' | 'desc',
+    };
 
-    // Map users to match the order of userIds
-    const userMap = new Map(users.map((user) => [user.id, user]));
-    return userIds.map((id) => userMap.get(id)!);
+    const result = await productService.findAll(filters);
+
+    res.json({
+      success: true,
+      ...result,
+    });
+  });
+
+  findOne = asyncHandler(async (req: Request, res: Response) => {
+    const product = await productService.findById(req.params.id);
+
+    res.json({
+      success: true,
+      data: product,
+    });
+  });
+
+  update = asyncHandler(async (req: Request, res: Response) => {
+    const product = await productService.update(req.params.id, req.body);
+
+    res.json({
+      success: true,
+      data: product,
+    });
+  });
+
+  delete = asyncHandler(async (req: Request, res: Response) => {
+    await productService.delete(req.params.id);
+
+    res.status(204).send();
   });
 }
 
-// products/products.resolver.ts
-@Resolver(() => Product)
-export class ProductsResolver {
-  constructor(
-    private readonly productsService: ProductsService,
-    private readonly dataloaderService: DataloaderService
-  ) {}
+export default new ProductController();
+```
 
-  @ResolveField(() => User)
-  async createdBy(@Parent() product: Product) {
-    // Use DataLoader instead of direct query
-    return this.dataloaderService.userLoader.load(product.createdBy.id);
+```typescript
+// src/routes/product.routes.ts
+import { Router } from 'express';
+import productController from '../controllers/product.controller';
+import { authenticate } from '../middleware/auth.middleware';
+import { authorize } from '../middleware/roles.middleware';
+import { validateCreateProduct, validateUpdateProduct } from '../middleware/validation.middleware';
+
+const router = Router();
+
+// Public routes
+router.get('/', productController.findAll);
+router.get('/:id', productController.findOne);
+
+// Protected routes
+router.use(authenticate);
+router.post('/', validateCreateProduct, productController.create);
+router.patch('/:id', validateUpdateProduct, productController.update);
+router.delete('/:id', authorize('admin'), productController.delete);
+
+export default router;
+```
+
+```typescript
+// src/middleware/validation.middleware.ts (additional validators)
+import { body, query } from 'express-validator';
+
+export const validateCreateProduct = [
+  body('name').trim().notEmpty().withMessage('Product name is required'),
+  body('description').trim().notEmpty().withMessage('Description is required'),
+  body('price').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('stock').isInt({ min: 0 }).withMessage('Stock must be a non-negative integer'),
+  body('imageUrl').optional().isURL().withMessage('Invalid image URL'),
+  body('categories').isArray().withMessage('Categories must be an array'),
+  validationHandler,
+];
+
+export const validateUpdateProduct = [
+  body('name').optional().trim().notEmpty().withMessage('Product name cannot be empty'),
+  body('price').optional().isFloat({ min: 0 }).withMessage('Price must be positive'),
+  body('stock').optional().isInt({ min: 0 }).withMessage('Stock must be non-negative'),
+  validationHandler,
+];
+
+export const validateProductQuery = [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be >= 1'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be 1-100'),
+  query('minPrice').optional().isFloat({ min: 0 }),
+  query('maxPrice').optional().isFloat({ min: 0 }),
+  validationHandler,
+];
+```
+
+### 2. Advanced REST Patterns
+
+```typescript
+// src/routes/advanced-patterns.ts
+import { Router } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+
+const router = Router();
+
+// Nested resources
+router.get('/users/:userId/posts', asyncHandler(async (req, res) => {
+  const posts = await prisma.post.findMany({
+    where: { authorId: req.params.userId },
+  });
+  res.json({ success: true, data: posts });
+}));
+
+// Bulk operations
+router.post('/products/bulk', asyncHandler(async (req, res) => {
+  const products = await prisma.product.createMany({
+    data: req.body.products,
+  });
+  res.json({ success: true, count: products.count });
+}));
+
+// Partial updates (PATCH)
+router.patch('/products/:id', asyncHandler(async (req, res) => {
+  const product = await prisma.product.update({
+    where: { id: req.params.id },
+    data: req.body,
+  });
+  res.json({ success: true, data: product });
+}));
+
+// Filtering and sorting
+router.get('/products', asyncHandler(async (req, res) => {
+  const { sort, filter, page = 1, limit = 10 } = req.query;
+  
+  const products = await prisma.product.findMany({
+    where: filter ? JSON.parse(filter as string) : {},
+    orderBy: sort ? JSON.parse(sort as string) : { createdAt: 'desc' },
+    skip: (Number(page) - 1) * Number(limit),
+    take: Number(limit),
+  });
+  
+  res.json({ success: true, data: products });
+}));
+
+export default router;
+```
+
+## Building GraphQL APIs with Express
+
+### 1. Setup Apollo Server with Express
+
+```bash
+npm install apollo-server-express graphql
+npm install @graphql-tools/schema
+```
+
+```typescript
+// src/graphql/server.ts
+import { ApolloServer } from 'apollo-server-express';
+import { makeExecutableSchema } from '@graphql-tools/schema';
+import express from 'express';
+import { typeDefs } from './schema';
+import { resolvers } from './resolvers';
+import { GraphQLContext } from './types';
+
+const schema = makeExecutableSchema({
+  typeDefs,
+  resolvers,
+});
+
+export const createApolloServer = () => {
+  return new ApolloServer({
+    schema,
+    context: ({ req }): GraphQLContext => {
+      const token = req.headers.authorization?.replace('Bearer ', '') || '';
+      // Verify token and get user
+      return {
+        req,
+        user: null, // decoded user from token
+      };
+    },
+    formatError: (error) => {
+      console.error('GraphQL Error:', error);
+      return error;
+    },
+  });
+};
+
+// Integrate with Express
+export const setupGraphQL = async (app: express.Application) => {
+  const server = createApolloServer();
+  await server.start();
+  
+  server.applyMiddleware({
+    app,
+    path: '/graphql',
+  });
+
+  console.log(\`🚀 GraphQL server ready at /graphql\`);
+};
+```
+
+### 2. GraphQL Schema Definition
+
+```typescript
+// src/graphql/schema.ts
+import { gql } from 'apollo-server-express';
+
+export const typeDefs = gql\`
+  type User {
+    id: ID!
+    email: String!
+    firstName: String!
+    lastName: String!
+    products: [Product!]!
+    createdAt: String!
+  }
+
+  type Product {
+    id: ID!
+    name: String!
+    description: String!
+    price: Float!
+    stock: Int!
+    imageUrl: String
+    categories: [String!]!
+    createdBy: User!
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  type ProductConnection {
+    edges: [ProductEdge!]!
+    pageInfo: PageInfo!
+    totalCount: Int!
+  }
+
+  type ProductEdge {
+    node: Product!
+    cursor: String!
+  }
+
+  type PageInfo {
+    hasNextPage: Boolean!
+    hasPreviousPage: Boolean!
+    startCursor: String
+    endCursor: String
+  }
+
+  input CreateProductInput {
+    name: String!
+    description: String!
+    price: Float!
+    stock: Int!
+    imageUrl: String
+    categories: [String!]!
+  }
+
+  input UpdateProductInput {
+    name: String
+    description: String
+    price: Float
+    stock: Int
+    imageUrl: String
+    categories: [String!]
+  }
+
+  input ProductFilter {
+    search: String
+    category: String
+    minPrice: Float
+    maxPrice: Float
+  }
+
+  type Query {
+    me: User!
+    user(id: ID!): User
+    users(page: Int, limit: Int): [User!]!
+    
+    product(id: ID!): Product
+    products(
+      filter: ProductFilter
+      first: Int
+      after: String
+    ): ProductConnection!
+  }
+
+  type Mutation {
+    createProduct(input: CreateProductInput!): Product!
+    updateProduct(id: ID!, input: UpdateProductInput!): Product!
+    deleteProduct(id: ID!): Boolean!
+  }
+
+  type Subscription {
+    productAdded: Product!
+    productUpdated(id: ID!): Product!
+  }
+\`;
+```
+
+### 3. GraphQL Resolvers
+
+```typescript
+// src/graphql/resolvers.ts
+import { GraphQLError } from 'graphql';
+import productService from '../services/product.service';
+import userService from '../services/user.service';
+import { GraphQLContext } from './types';
+
+export const resolvers = {
+  Query: {
+    me: async (_: any, __: any, context: GraphQLContext) => {
+      if (!context.user) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
+      return userService.findById(context.user.id);
+    },
+
+    user: async (_: any, { id }: { id: string }) => {
+      return userService.findById(id);
+    },
+
+    users: async (_: any, { page = 1, limit = 10 }: { page: number; limit: number }) => {
+      const result = await userService.findAll(page, limit);
+      return result.data;
+    },
+
+    product: async (_: any, { id }: { id: string }) => {
+      return productService.findById(id);
+    },
+
+    products: async (
+      _: any,
+      {
+        filter,
+        first = 10,
+        after,
+      }: {
+        filter?: any;
+        first: number;
+        after?: string;
+      }
+    ) => {
+      const page = after ? parseInt(Buffer.from(after, 'base64').toString()) + 1 : 1;
+      
+      const result = await productService.findAll({
+        ...filter,
+        page,
+        limit: first,
+      });
+
+      const edges = result.data.map((product, index) => ({
+        node: product,
+        cursor: Buffer.from(\`\${page - 1 + index}\`).toString('base64'),
+      }));
+
+      return {
+        edges,
+        pageInfo: {
+          hasNextPage: result.pagination.page < result.pagination.totalPages,
+          hasPreviousPage: result.pagination.page > 1,
+          startCursor: edges[0]?.cursor,
+          endCursor: edges[edges.length - 1]?.cursor,
+        },
+        totalCount: result.pagination.total,
+      };
+    },
+  },
+
+  Mutation: {
+    createProduct: async (
+      _: any,
+      { input }: { input: any },
+      context: GraphQLContext
+    ) => {
+      if (!context.user) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
+
+      return productService.create(input, context.user.id);
+    },
+
+    updateProduct: async (
+      _: any,
+      { id, input }: { id: string; input: any },
+      context: GraphQLContext
+    ) => {
+      if (!context.user) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
+
+      return productService.update(id, input);
+    },
+
+    deleteProduct: async (
+      _: any,
+      { id }: { id: string },
+      context: GraphQLContext
+    ) => {
+      if (!context.user) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
+
+      await productService.delete(id);
+      return true;
+    },
+  },
+
+  // Field resolvers
+  User: {
+    products: async (parent: any) => {
+      return prisma.product.findMany({
+        where: { createdById: parent.id },
+      });
+    },
+  },
+
+  Product: {
+    createdBy: async (parent: any) => {
+      return userService.findById(parent.createdById);
+    },
+  },
+};
+```
+
+### 4. DataLoader for N+1 Prevention
+
+```bash
+npm install dataloader
+```
+
+```typescript
+// src/graphql/dataloaders.ts
+import DataLoader from 'dataloader';
+import prisma from '../config/database';
+
+export const createLoaders = () => {
+  const userLoader = new DataLoader(async (userIds: readonly string[]) => {
+    const users = await prisma.user.findMany({
+      where: { id: { in: [...userIds] } },
+    });
+
+    const userMap = new Map(users.map((user) => [user.id, user]));
+    return userIds.map((id) => userMap.get(id) || null);
+  });
+
+  const productsByUserLoader = new DataLoader(async (userIds: readonly string[]) => {
+    const products = await prisma.product.findMany({
+      where: { createdById: { in: [...userIds] } },
+    });
+
+    const productsByUser = new Map<string, any[]>();
+    products.forEach((product) => {
+      const existing = productsByUser.get(product.createdById) || [];
+      productsByUser.set(product.createdById, [...existing, product]);
+    });
+
+    return userIds.map((id) => productsByUser.get(id) || []);
+  });
+
+  return {
+    userLoader,
+    productsByUserLoader,
+  };
+};
+
+// Update context
+export interface GraphQLContext {
+  req: any;
+  user: any;
+  loaders: ReturnType<typeof createLoaders>;
+}
+```
+
+```typescript
+// Update resolver to use DataLoader
+Product: {
+  createdBy: async (parent: any, _: any, context: GraphQLContext) => {
+    return context.loaders.userLoader.load(parent.createdById);
+  },
+},
+
+User: {
+  products: async (parent: any, _: any, context: GraphQLContext) => {
+    return context.loaders.productsByUserLoader.load(parent.id);
+  },
+},
+```
+
+### 5. GraphQL Subscriptions
+
+```bash
+npm install graphql-subscriptions
+```
+
+```typescript
+// src/graphql/pubsub.ts
+import { PubSub } from 'graphql-subscriptions';
+
+export const pubsub = new PubSub();
+
+export const EVENTS = {
+  PRODUCT_ADDED: 'PRODUCT_ADDED',
+  PRODUCT_UPDATED: 'PRODUCT_UPDATED',
+  PRODUCT_DELETED: 'PRODUCT_DELETED',
+};
+```
+
+```typescript
+// Update resolvers with subscriptions
+import { pubsub, EVENTS } from './pubsub';
+
+export const resolvers = {
+  // ... existing resolvers
+
+  Mutation: {
+    createProduct: async (_: any, { input }: any, context: GraphQLContext) => {
+      if (!context.user) {
+        throw new GraphQLError('Not authenticated');
+      }
+
+      const product = await productService.create(input, context.user.id);
+      
+      // Publish event
+      pubsub.publish(EVENTS.PRODUCT_ADDED, {
+        productAdded: product,
+      });
+
+      return product;
+    },
+  },
+
+  Subscription: {
+    productAdded: {
+      subscribe: () => pubsub.asyncIterator([EVENTS.PRODUCT_ADDED]),
+    },
+    productUpdated: {
+      subscribe: (_: any, { id }: { id: string }) => 
+        pubsub.asyncIterator([`${EVENTS.PRODUCT_UPDATED}_${id}`]),
+    },
+  },
+};
+```
+
+## Error Handling
+
+### REST Error Handling
+
+```typescript
+// src/middleware/error.middleware.ts
+import { Request, Response, NextFunction } from 'express';
+import { AppError } from '../utils/AppError';
+
+export const errorHandler = (
+  err: Error,
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  if (err instanceof AppError) {
+    return res.status(err.statusCode).json({
+      success: false,
+      error: {
+        message: err.message,
+        code: err.statusCode,
+      },
+    });
+  }
+
+  // Prisma errors
+  if (err.name === 'PrismaClientKnownRequestError') {
+    return res.status(400).json({
+      success: false,
+      error: {
+        message: 'Database error',
+        details: err.message,
+      },
+    });
+  }
+
+  console.error('Unexpected error:', err);
+
+  res.status(500).json({
+    success: false,
+    error: {
+      message: 'Internal server error',
+    },
+  });
+};
+```
+
+### GraphQL Error Handling
+
+```typescript
+// src/graphql/errors.ts
+import { GraphQLError } from 'graphql';
+
+export class AuthenticationError extends GraphQLError {
+  constructor(message: string = 'Not authenticated') {
+    super(message, {
+      extensions: {
+        code: 'UNAUTHENTICATED',
+        http: { status: 401 },
+      },
+    });
+  }
+}
+
+export class ForbiddenError extends GraphQLError {
+  constructor(message: string = 'Forbidden') {
+    super(message, {
+      extensions: {
+        code: 'FORBIDDEN',
+        http: { status: 403 },
+      },
+    });
+  }
+}
+
+export class NotFoundError extends GraphQLError {
+  constructor(resource: string) {
+    super(\`\${resource} not found\`, {
+      extensions: {
+        code: 'NOT_FOUND',
+        http: { status: 404 },
+      },
+    });
   }
 }
 ```
 
-### 5. REST API Rate Limiting
+## Testing
+
+### Testing REST APIs
 
 ```typescript
-// Install throttler
-// npm install @nestjs/throttler
+// src/__tests__/product.routes.test.ts
+import request from 'supertest';
+import app from '../server';
 
-// app.module.ts
-import { ThrottlerModule } from "@nestjs/throttler";
+describe('Product API', () => {
+  let authToken: string;
+  let productId: string;
 
-@Module({
-  imports: [
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000, // 60 seconds
-        limit: 10, // 10 requests per ttl
-      },
-    ]),
-  ],
-})
-export class AppModule {}
+  beforeAll(async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'test@example.com', password: 'password123' });
+    authToken = res.body.data.accessToken;
+  });
 
-// main.ts
-import { ThrottlerGuard } from "@nestjs/throttler";
+  describe('POST /api/v1/products', () => {
+    it('should create a new product', async () => {
+      const productData = {
+        name: 'Test Product',
+        description: 'Test description',
+        price: 99.99,
+        stock: 10,
+        categories: ['electronics'],
+      };
 
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+      const res = await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', \`Bearer \${authToken}\`)
+        .send(productData);
 
-  // Apply globally
-  app.useGlobalGuards(new ThrottlerGuard());
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.name).toBe(productData.name);
+      productId = res.body.data.id;
+    });
+  });
 
-  await app.listen(3000);
-}
+  describe('GET /api/v1/products', () => {
+    it('should return products with filters', async () => {
+      const res = await request(app)
+        .get('/api/v1/products')
+        .query({ category: 'electronics', minPrice: 50 });
 
-// Custom rate limit on specific endpoint
-import { Throttle } from "@nestjs/throttler";
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data)).toBe(true);
+    });
+  });
+});
+```
 
-@Controller("products")
-export class ProductsController {
-  @Throttle({ default: { limit: 3, ttl: 60000 } }) // 3 requests per minute
-  @Post()
-  create(@Body() createProductDto: CreateProductDto) {
-    return this.productsService.create(createProductDto);
-  }
-}
+### Testing GraphQL APIs
+
+```typescript
+// src/__tests__/graphql.test.ts
+import request from 'supertest';
+import app from '../server';
+
+describe('GraphQL API', () => {
+  let authToken: string;
+
+  beforeAll(async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'test@example.com', password: 'password123' });
+    authToken = res.body.data.accessToken;
+  });
+
+  describe('Query: products', () => {
+    it('should fetch products', async () => {
+      const query = \`
+        query {
+          products(first: 10) {
+            edges {
+              node {
+                id
+                name
+                price
+              }
+            }
+            totalCount
+          }
+        }
+      \`;
+
+      const res = await request(app)
+        .post('/graphql')
+        .set('Authorization', \`Bearer \${authToken}\`)
+        .send({ query });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.products).toBeDefined();
+      expect(res.body.errors).toBeUndefined();
+    });
+  });
+
+  describe('Mutation: createProduct', () => {
+    it('should create a product', async () => {
+      const mutation = \`
+        mutation CreateProduct($input: CreateProductInput!) {
+          createProduct(input: $input) {
+            id
+            name
+            price
+          }
+        }
+      \`;
+
+      const variables = {
+        input: {
+          name: 'GraphQL Product',
+          description: 'Created via GraphQL',
+          price: 149.99,
+          stock: 5,
+          categories: ['test'],
+        },
+      };
+
+      const res = await request(app)
+        .post('/graphql')
+        .set('Authorization', \`Bearer \${authToken}\`)
+        .send({ query: mutation, variables });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.createProduct).toBeDefined();
+      expect(res.body.data.createProduct.name).toBe('GraphQL Product');
+    });
+  });
+});
 ```
 
 ## Best Practices
 
-### REST API Best Practices
+### REST Best Practices
 
-```typescript
-// 1. Use proper HTTP methods and status codes
-@Post()       // 201 Created
-@Get()        // 200 OK
-@Patch()      // 200 OK
-@Delete()     // 204 No Content
-
-// 2. Version your API
-app.setGlobalPrefix('api/v1');
-
-// 3. Implement pagination
-interface PaginatedResponse<T> {
-  data: T[];
-  meta: {
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
-  };
-}
-
-// 4. Use filtering, sorting, and searching
-@Get()
-findAll(
-  @Query('search') search?: string,
-  @Query('sort') sort?: string,
-  @Query('page') page?: number,
-) {}
-
-// 5. Return consistent error responses
-{
-  "statusCode": 404,
-  "message": "Product not found",
-  "error": "Not Found",
-  "timestamp": "2024-01-13T10:00:00.000Z",
-  "path": "/api/v1/products/123"
-}
-```
+1. **Use proper HTTP methods**: GET, POST, PUT/PATCH, DELETE
+2. **Return appropriate status codes**: 200, 201, 204, 400, 404, 500
+3. **Version your API**: `/api/v1/`, `/api/v2/`
+4. **Use query parameters for filtering**: `?search=term&page=1`
+5. **Implement pagination**: Cursor or offset-based
+6. **Use HATEOAS**: Include links to related resources
+7. **Rate limiting**: Protect against abuse
+8. **Caching headers**: ETag, Cache-Control
 
 ### GraphQL Best Practices
 
-```typescript
-// 1. Use Input types for mutations
-@InputType()
-class CreateProductInput { }
-
-// 2. Implement field-level authorization
-@ResolveField()
-@UseGuards(GqlAuthGuard)
-async sensitiveData(@Parent() product: Product) {}
-
-// 3. Use DataLoader to avoid N+1 queries
-// (shown in example above)
-
-// 4. Implement pagination for lists
-@ObjectType()
-class PaginatedProducts {
-  @Field(() => [Product])
-  items: Product[];
-
-  @Field(() => Int)
-  total: number;
-
-  @Field()
-  hasMore: boolean;
-}
-
-// 5. Add descriptions to schema
-@Field({ description: 'The product price in USD' })
-price: number;
-
-// 6. Handle errors gracefully
-try {
-  return await this.productsService.findOne(id);
-} catch (error) {
-  throw new GraphQLError('Product not found', {
-    extensions: { code: 'PRODUCT_NOT_FOUND' },
-  });
-}
-```
+1. **Use DataLoader**: Prevent N+1 query problems
+2. **Implement depth limiting**: Prevent deeply nested queries
+3. **Add query complexity analysis**: Limit expensive queries
+4. **Use cursor-based pagination**: More reliable than offset
+5. **Type your schema carefully**: Clear, consistent naming
+6. **Add descriptions**: Document your schema
+7. **Implement proper error handling**: Use error extensions
+8. **Monitor query performance**: Track slow queries
 
 ## Key Takeaways
 
-1. **REST**: Simple, cacheable, well-suited for CRUD operations
-2. **GraphQL**: Flexible, efficient, great for complex data requirements
-3. **Choose based on needs**: REST for simplicity, GraphQL for flexibility
-4. **Implement proper validation**: Use DTOs/Input types with class-validator
-5. **Handle errors consistently**: Provide meaningful error messages
-6. **Optimize queries**: Use DataLoader for GraphQL, eager loading for REST
-7. **Document your API**: Swagger for REST, introspection for GraphQL
-8. **Rate limiting**: Protect your API from abuse
+1. **REST** is simple, cacheable, and well-understood
+2. **GraphQL** offers flexibility and reduces over-fetching
+3. **Express** works great with both approaches
+4. **Apollo Server** seamlessly integrates with Express
+5. **DataLoader** solves N+1 query problems
+6. **Proper validation** is crucial for both
+7. **Error handling** patterns differ between REST and GraphQL
+8. **Testing** is essential for API reliability
 
-Both REST and GraphQL have their place. REST excels at simple, cacheable operations, while GraphQL shines with complex, nested data requirements.
+Choose REST for simple, cacheable APIs. Choose GraphQL for complex data requirements and multiple client types.

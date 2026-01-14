@@ -65,7 +65,7 @@ Navigate related data easily
 
 ```bash
 npm install prisma @prisma/client
-npm install -D @nestjs/prisma
+# Prisma is framework-agnostic, no special Express package needed
 
 # Initialize Prisma
 npx prisma init
@@ -209,60 +209,69 @@ npx prisma migrate reset
 npx prisma studio
 ```
 
-### 4. NestJS Integration
+### 4. Express Integration
 
 ```typescript
-// prisma.module.ts
-import { Module, Global } from "@nestjs/common";
-import { PrismaService } from "./prisma.service";
-
-@Global()
-@Module({
-  providers: [PrismaService],
-  exports: [PrismaService],
-})
-export class PrismaModule {}
-```
-
-```typescript
-// prisma.service.ts
-import { Injectable, OnModuleInit, OnModuleDestroy } from "@nestjs/common";
+// src/database/prisma.service.ts
 import { PrismaClient } from "@prisma/client";
 
-@Injectable()
-export class PrismaService
-  extends PrismaClient
-  implements OnModuleInit, OnModuleDestroy
-{
-  async onModuleInit() {
-    await this.$connect();
+export class PrismaService extends PrismaClient {
+  constructor() {
+    super({
+      log:
+        process.env.NODE_ENV === "development"
+          ? ["query", "error", "warn"]
+          : ["error"],
+    });
   }
 
-  async onModuleDestroy() {
+  async connect() {
+    await this.$connect();
+    console.log("✓ Database connected");
+  }
+
+  async disconnect() {
     await this.$disconnect();
+    console.log("✓ Database disconnected");
   }
 
   // Custom methods
   async cleanDatabase() {
-    if (process.env.NODE_ENV === "production") return;
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Cannot clean production database");
+    }
 
     const models = Reflect.ownKeys(this).filter((key) => key[0] !== "_");
-    return Promise.all(models.map((modelKey) => this[modelKey].deleteMany()));
+    return Promise.all(
+      models.map((modelKey) => (this as any)[modelKey].deleteMany())
+    );
   }
 }
+
+// Singleton instance
+export const prisma = new PrismaService();
+
+// Graceful shutdown
+process.on("SIGINT", async () => {
+  await prisma.disconnect();
+  process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+  await prisma.disconnect();
+  process.exit(0);
+});
 ```
 
 ### 5. Prisma CRUD Operations
 
 ```typescript
-// user.service.ts
-import { Injectable } from "@nestjs/common";
-import { PrismaService } from "../prisma/prisma.service";
+// src/services/user.service.ts
+import { prisma } from "../database/prisma.service";
 import { User, Prisma } from "@prisma/client";
 
-@Injectable()
 export class UserService {
-  constructor(private prisma: PrismaService) {}
+  private prisma = prisma;
 
   // Create
   async create(data: Prisma.UserCreateInput): Promise<User> {
@@ -489,40 +498,55 @@ async transferCredits(fromUserId: string, toUserId: string, amount: number) {
 ### 1. Installation & Setup
 
 ```bash
-npm install typeorm @nestjs/typeorm pg
+npm install typeorm reflect-metadata pg
 
 # For migrations
 npm install -D ts-node
 ```
 
 ```typescript
-// app.module.ts
-import { Module } from "@nestjs/common";
-import { TypeOrmModule } from "@nestjs/typeorm";
-import { ConfigModule, ConfigService } from "@nestjs/config";
+// src/database/data-source.ts
+import "reflect-metadata";
+import { DataSource } from "typeorm";
+import * as dotenv from "dotenv";
 
-@Module({
-  imports: [
-    ConfigModule.forRoot(),
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        type: "postgres",
-        host: configService.get("DB_HOST"),
-        port: configService.get("DB_PORT"),
-        username: configService.get("DB_USERNAME"),
-        password: configService.get("DB_PASSWORD"),
-        database: configService.get("DB_DATABASE"),
-        entities: [__dirname + "/**/*.entity{.ts,.js}"],
-        synchronize: false, // Never true in production!
-        logging: process.env.NODE_ENV === "development",
-        migrations: [__dirname + "/migrations/**/*{.ts,.js}"],
-      }),
-      inject: [ConfigService],
-    }),
-  ],
-})
-export class AppModule {}
+dotenv.config();
+
+export const AppDataSource = new DataSource({
+  type: "postgres",
+  host: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT || "5432"),
+  username: process.env.DB_USERNAME,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_DATABASE,
+  entities: [__dirname + "/../entities/**/*.entity{.ts,.js}"],
+  synchronize: false, // Never true in production!
+  logging: process.env.NODE_ENV === "development",
+  migrations: [__dirname + "/migrations/**/*{.ts,.js}"],
+  subscribers: [],
+});
+
+// Initialize connection
+export async function initializeDatabase() {
+  try {
+    await AppDataSource.initialize();
+    console.log("✓ Database connection established");
+  } catch (error) {
+    console.error("Database connection failed:", error);
+    process.exit(1);
+  }
+}
+
+// Graceful shutdown
+process.on("SIGINT", async () => {
+  await AppDataSource.destroy();
+  process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+  await AppDataSource.destroy();
+  process.exit(0);
+});
 ```
 
 ### 2. Entity Definition
@@ -762,18 +786,17 @@ export class InitialMigration1705123456789 implements MigrationInterface {
 ### 4. TypeORM CRUD Operations
 
 ```typescript
-// user.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
+// src/services/user.service.ts
 import { Repository, In, Like, MoreThan } from "typeorm";
-import { User } from "./entities/user.entity";
+import { AppDataSource } from "../database/data-source";
+import { User } from "../entities/user.entity";
 
-@Injectable()
 export class UserService {
-  constructor(
-    @InjectRepository(User)
-    private userRepository: Repository<User>
-  ) {}
+  private userRepository: Repository<User>;
+
+  constructor() {
+    this.userRepository = AppDataSource.getRepository(User);
+  }
 
   // Create
   async create(

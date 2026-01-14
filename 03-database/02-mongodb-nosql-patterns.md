@@ -506,31 +506,20 @@ db.users.getIndexes();
 db.users.dropIndex("email_1");
 ```
 
-### 7. MongoDB with Mongoose (Node.js/NestJS)
+### 7. MongoDB with Mongoose (Node.js/Express)
 
 ```bash
-npm install @nestjs/mongoose mongoose
+npm install mongoose
 ```
 
 ```typescript
-// schemas/user.schema.ts
-import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
-import { Document, Types } from "mongoose";
+// src/models/user.model.ts
+import mongoose, { Document, Schema } from "mongoose";
 
-export type UserDocument = User & Document;
-
-@Schema({ timestamps: true })
-export class User {
-  @Prop({ required: true, unique: true, lowercase: true })
+export interface IUser extends Document {
   email: string;
-
-  @Prop({ required: true, unique: true, minlength: 3, maxlength: 50 })
   username: string;
-
-  @Prop({ required: true })
   passwordHash: string;
-
-  @Prop({ type: Object, default: {} })
   profile: {
     firstName?: string;
     lastName?: string;
@@ -541,21 +530,53 @@ export class User {
       country?: string;
     };
   };
-
-  @Prop({ type: [String], default: ["user"] })
   roles: string[];
-
-  @Prop({ type: Object, default: {} })
   preferences: Record<string, any>;
-
-  @Prop({ type: Date })
   lastLoginAt?: Date;
-
-  @Prop({ type: Date })
   deletedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+  isAdmin(): boolean;
 }
 
-export const UserSchema = SchemaFactory.createForClass(User);
+const UserSchema = new Schema<IUser>(
+  {
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+    },
+    username: {
+      type: String,
+      required: true,
+      unique: true,
+      minlength: 3,
+      maxlength: 50,
+    },
+    passwordHash: {
+      type: String,
+      required: true,
+    },
+    profile: {
+      type: Object,
+      default: {},
+    },
+    roles: {
+      type: [String],
+      default: ["user"],
+    },
+    preferences: {
+      type: Object,
+      default: {},
+    },
+    lastLoginAt: Date,
+    deletedAt: Date,
+  },
+  {
+    timestamps: true,
+  }
+);
 
 // Add indexes
 UserSchema.index({ email: 1 });
@@ -579,28 +600,24 @@ UserSchema.methods.isAdmin = function () {
 UserSchema.statics.findByEmail = function (email: string) {
   return this.findOne({ email: email.toLowerCase() });
 };
+
+export const User = mongoose.model<IUser>("User", UserSchema);
 ```
 
 ```typescript
-// user.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectModel } from "@nestjs/mongoose";
+// src/services/user.service.ts
 import { Model, Types } from "mongoose";
-import { User, UserDocument } from "./schemas/user.schema";
+import { User, IUser } from "../models/user.model";
 
-@Injectable()
 export class UserService {
-  constructor(
-    @InjectModel(User.name)
-    private userModel: Model<UserDocument>
-  ) {}
+  private userModel: Model<IUser> = User;
 
-  async create(createUserDto: any): Promise<User> {
+  async create(createUserDto: any): Promise<IUser> {
     const user = new this.userModel(createUserDto);
     return user.save();
   }
 
-  async findAll(page: number = 1, limit: number = 10): Promise<User[]> {
+  async findAll(page: number = 1, limit: number = 10): Promise<IUser[]> {
     return this.userModel
       .find({ deletedAt: { $exists: false } })
       .sort({ createdAt: -1 })
@@ -679,10 +696,8 @@ export class UserService {
 
 ```typescript
 // Multi-document transaction
-import { InjectConnection } from "@nestjs/mongoose";
 import { Connection } from "mongoose";
 
-@Injectable()
 export class OrderService {
   constructor(
     @InjectConnection() private connection: Connection,

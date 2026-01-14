@@ -64,15 +64,15 @@ Leverage browser protections
 ### 1. NestJS CORS Setup
 
 ```typescript
-// src/main.ts
-import { NestFactory } from "@nestjs/core";
-import { AppModule } from "./app.module";
+// src/app.ts
+import express from "express";
+import cors from "cors";
 
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+const app = express();
 
-  // Basic CORS configuration
-  app.enableCors({
+// Basic CORS configuration
+app.use(
+  cors({
     origin: process.env.ALLOWED_ORIGINS?.split(",") || [
       "https://example.com",
       "https://www.example.com",
@@ -87,15 +87,15 @@ async function bootstrap() {
     exposedHeaders: ["X-Total-Count", "X-Page-Number"],
     credentials: true,
     maxAge: 3600, // 1 hour preflight cache
-  });
+  })
+);
 
-  await app.listen(3000);
-}
-
-bootstrap();
+app.listen(3000, () => {
+  console.log("Server running on port 3000");
+});
 
 // src/config/cors.config.ts
-import { CorsOptions } from "@nestjs/common/interfaces/external/cors-options.interface";
+import { CorsOptions } from "cors";
 
 export const corsConfig: CorsOptions = {
   origin: (origin, callback) => {
@@ -131,7 +131,6 @@ export const corsConfig: CorsOptions = {
 
 ```typescript
 // src/decorators/cors.decorator.ts
-import { SetMetadata } from "@nestjs/common";
 
 export const CORS_ORIGINS_KEY = "cors_origins";
 export const CorsOrigins = (...origins: string[]) =>
@@ -143,11 +142,8 @@ import {
   CanActivate,
   ExecutionContext,
   ForbiddenException,
-} from "@nestjs/common";
-import { Reflector } from "@nestjs/core";
 import { CORS_ORIGINS_KEY } from "../decorators/cors.decorator";
 
-@Injectable()
 export class CorsGuard implements CanActivate {
   constructor(private reflector: Reflector) {}
 
@@ -173,7 +169,7 @@ export class CorsGuard implements CanActivate {
 }
 
 // src/controllers/user.controller.ts
-@Controller("users")
+
 export class UserController {
   @Get("public")
   @CorsOrigins("*") // Allow all origins
@@ -194,41 +190,40 @@ export class UserController {
 
 ```typescript
 // src/middleware/cors.middleware.ts
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 
-@Injectable()
-export class CorsMiddleware implements NestMiddleware {
-  private allowedOrigins = process.env.ALLOWED_ORIGINS?.split(",") || [];
+export function corsMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(",") || [];
+  const origin = req.headers.origin;
 
-  use(req: Request, res: Response, next: NextFunction) {
-    const origin = req.headers.origin;
-
-    if (origin && this.allowedOrigins.includes(origin)) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-      res.setHeader(
-        "Access-Control-Allow-Methods",
-        "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-      );
-      res.setHeader(
-        "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, X-Requested-With"
-      );
-      res.setHeader(
-        "Access-Control-Expose-Headers",
-        "X-Total-Count, X-Page-Number"
-      );
-      res.setHeader("Access-Control-Max-Age", "86400");
-    }
-
-    // Handle preflight requests
-    if (req.method === "OPTIONS") {
-      return res.sendStatus(204);
-    }
-
-    next();
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, X-Requested-With"
+    );
+    res.setHeader(
+      "Access-Control-Expose-Headers",
+      "X-Total-Count, X-Page-Number"
+    );
+    res.setHeader("Access-Control-Max-Age", "86400");
   }
+
+  // Handle preflight requests
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
 }
 ```
 
@@ -237,16 +232,16 @@ export class CorsMiddleware implements NestMiddleware {
 ### 1. Helmet Configuration
 
 ```typescript
-// src/main.ts
+// src/app.ts
+import express from "express";
 import helmet from "helmet";
 
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+const app = express();
 
-  // Apply Helmet middleware
-  app.use(
-    helmet({
-      // Content Security Policy
+// Apply Helmet middleware
+app.use(
+  helmet({
+    // Content Security Policy
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
@@ -313,10 +308,8 @@ bootstrap();
 
 ```typescript
 // src/middleware/security-headers.middleware.ts
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 
-@Injectable()
 export class SecurityHeadersMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction) {
     // Content Security Policy
@@ -447,11 +440,9 @@ export const cspDirectives = {
 };
 
 // src/middleware/csp-nonce.middleware.ts
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 import * as crypto from "crypto";
 
-@Injectable()
 export class CspNonceMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction) {
     // Generate unique nonce for each request
@@ -486,7 +477,6 @@ export class CspNonceMiddleware implements NestMiddleware {
 
 ```typescript
 // src/controllers/csp-report.controller.ts
-import { Controller, Post, Body, Logger } from "@nestjs/common";
 
 interface CspReport {
   "csp-report": {
@@ -499,7 +489,6 @@ interface CspReport {
   };
 }
 
-@Controller("csp-report")
 export class CspReportController {
   private readonly logger = new Logger(CspReportController.name);
 
@@ -577,11 +566,9 @@ res.cookie("accessToken", token, {
 
 ```typescript
 // src/middleware/csrf.middleware.ts
-import { Injectable, NestMiddleware, ForbiddenException } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 import * as csrf from "csurf";
 
-@Injectable()
 export class CsrfMiddleware implements NestMiddleware {
   private csrfProtection = csrf({
     cookie: {
@@ -617,8 +604,6 @@ export class CsrfMiddleware implements NestMiddleware {
 
 ```typescript
 // test/security-headers.e2e-spec.ts
-import { Test } from "@nestjs/testing";
-import { INestApplication } from "@nestjs/common";
 import * as request from "supertest";
 import { AppModule } from "../src/app.module";
 

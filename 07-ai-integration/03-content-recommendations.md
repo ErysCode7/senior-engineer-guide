@@ -22,7 +22,6 @@ Collaborative filtering recommends items based on similar users' preferences.
 
 ```typescript
 // src/services/collaborative-filtering.service.ts
-import { Injectable } from "@nestjs/common";
 
 interface UserRating {
   userId: string;
@@ -30,7 +29,6 @@ interface UserRating {
   rating: number;
 }
 
-@Injectable()
 export class CollaborativeFilteringService {
   // Calculate cosine similarity between two users
   private calculateCosineSimilarity(
@@ -172,9 +170,7 @@ export class CollaborativeFilteringService {
 
 ```typescript
 // src/services/item-based-cf.service.ts
-import { Injectable } from "@nestjs/common";
 
-@Injectable()
 export class ItemBasedCFService {
   // Calculate similarity between two items
   private calculateItemSimilarity(
@@ -270,7 +266,6 @@ Recommends items similar to those the user has liked, based on item features.
 
 ```typescript
 // src/services/content-based-filtering.service.ts
-import { Injectable } from "@nestjs/common";
 
 interface Item {
   id: string;
@@ -287,7 +282,6 @@ interface UserProfile {
   preferredTags: Map<string, number>; // tag -> weight
 }
 
-@Injectable()
 export class ContentBasedFilteringService {
   // Build user profile from interaction history
   async buildUserProfile(
@@ -394,7 +388,6 @@ Combines collaborative and content-based filtering for better recommendations.
 
 ```typescript
 // src/services/hybrid-recommendation.service.ts
-import { Injectable } from "@nestjs/common";
 import { CollaborativeFilteringService } from "./collaborative-filtering.service";
 import { ContentBasedFilteringService } from "./content-based-filtering.service";
 
@@ -407,7 +400,6 @@ interface HybridRecommendation {
   };
 }
 
-@Injectable()
 export class HybridRecommendationService {
   constructor(
     private readonly cfService: CollaborativeFilteringService,
@@ -488,10 +480,8 @@ export class HybridRecommendationService {
 
 ```typescript
 // src/services/ml-recommendation.service.ts
-import { Injectable } from "@nestjs/common";
 import * as tf from "@tensorflow/tfjs-node";
 
-@Injectable()
 export class MLRecommendationService {
   private model: tf.LayersModel;
 
@@ -599,11 +589,9 @@ export class MLRecommendationService {
 
 ```typescript
 // src/controllers/recommendations.controller.ts
-import { Controller, Get, Post, Body, Param, Query } from "@nestjs/common";
 import { HybridRecommendationService } from "../services/hybrid-recommendation.service";
 import { RecommendationCacheService } from "../services/recommendation-cache.service";
 
-@Controller("api/recommendations")
 export class RecommendationsController {
   constructor(
     private readonly hybridService: HybridRecommendationService,
@@ -679,7 +667,6 @@ export class RecommendationsController {
 
 ```typescript
 // src/services/ab-test-recommendation.service.ts
-import { Injectable } from "@nestjs/common";
 
 interface Experiment {
   id: string;
@@ -690,7 +677,6 @@ interface Experiment {
   }>;
 }
 
-@Injectable()
 export class ABTestRecommendationService {
   private experiments: Map<string, Experiment> = new Map();
 

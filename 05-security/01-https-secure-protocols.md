@@ -213,9 +213,7 @@ export default app;
 
 ```typescript
 // src/main.ts
-import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
-import { ValidationPipe } from "@nestjs/common";
 import * as fs from "fs";
 import * as helmet from "helmet";
 
@@ -228,9 +226,13 @@ async function bootstrap() {
         }
       : undefined;
 
-  const app = await NestFactory.create(AppModule, {
-    httpsOptions,
-  });
+  const app = express();
+
+  // Configure HTTPS server
+  if (httpsOptions) {
+    const httpsServer = https.createServer(httpsOptions, app);
+    httpsServer.listen(443);
+  }
 
   // Security middleware
   app.use(
@@ -280,10 +282,8 @@ bootstrap();
 
 ```typescript
 // src/middleware/hsts.middleware.ts
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 
-@Injectable()
 export class HSTSMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction) {
     // Only set HSTS in production
@@ -299,10 +299,8 @@ export class HSTSMiddleware implements NestMiddleware {
 }
 
 // src/middleware/force-https.middleware.ts
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 
-@Injectable()
 export class ForceHTTPSMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction) {
     // Skip in development

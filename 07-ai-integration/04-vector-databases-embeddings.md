@@ -18,10 +18,8 @@ Vector embeddings are numerical representations of text, images, or other data t
 
 ```typescript
 // src/services/embedding.service.ts
-import { Injectable } from "@nestjs/common";
 import { OpenAI } from "openai";
 
-@Injectable()
 export class EmbeddingService {
   private openai: OpenAI;
 
@@ -109,7 +107,6 @@ npm install @pinecone-database/pinecone
 
 ```typescript
 // src/services/pinecone.service.ts
-import { Injectable } from "@nestjs/common";
 import { Pinecone } from "@pinecone-database/pinecone";
 
 interface VectorMetadata {
@@ -119,7 +116,6 @@ interface VectorMetadata {
   [key: string]: any;
 }
 
-@Injectable()
 export class PineconeService {
   private client: Pinecone;
   private indexName: string = "my-index";
@@ -249,10 +245,8 @@ npm install weaviate-ts-client
 
 ```typescript
 // src/services/weaviate.service.ts
-import { Injectable } from "@nestjs/common";
 import weaviate, { WeaviateClient } from "weaviate-ts-client";
 
-@Injectable()
 export class WeaviateService {
   private client: WeaviateClient;
   private className: string = "Document";
@@ -421,10 +415,8 @@ npm install chromadb
 
 ```typescript
 // src/services/chroma.service.ts
-import { Injectable } from "@nestjs/common";
 import { ChromaClient, OpenAIEmbeddingFunction } from "chromadb";
 
-@Injectable()
 export class ChromaService {
   private client: ChromaClient;
   private embeddingFunction: OpenAIEmbeddingFunction;
@@ -520,12 +512,10 @@ Retrieval Augmented Generation combines vector search with LLM generation.
 
 ```typescript
 // src/services/rag.service.ts
-import { Injectable } from "@nestjs/common";
 import { EmbeddingService } from "./embedding.service";
 import { PineconeService } from "./pinecone.service";
 import { OpenAI } from "openai";
 
-@Injectable()
 export class RAGService {
   private openai: OpenAI;
 
@@ -698,7 +688,7 @@ Please provide a detailed answer based on the context above. Cite the relevant c
 }
 
 // Controller
-@Controller("api/rag")
+
 export class RAGController {
   constructor(private readonly ragService: RAGService) {}
 
@@ -723,7 +713,6 @@ export class RAGController {
 
 ```typescript
 // src/services/semantic-search.service.ts
-import { Injectable } from "@nestjs/common";
 import { EmbeddingService } from "./embedding.service";
 import { PineconeService } from "./pinecone.service";
 
@@ -734,7 +723,6 @@ interface SearchOptions {
   minScore?: number;
 }
 
-@Injectable()
 export class SemanticSearchService {
   constructor(
     private readonly embeddingService: EmbeddingService,

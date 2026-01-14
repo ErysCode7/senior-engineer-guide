@@ -454,12 +454,9 @@ export class User {
 
 ```typescript
 // user.repository.ts
-import { Injectable } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, ILike } from "typeorm";
 import { User } from "./entities/user.entity";
 
-@Injectable()
 export class UserRepository {
   constructor(
     @InjectRepository(User)

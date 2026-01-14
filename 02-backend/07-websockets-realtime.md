@@ -2,822 +2,588 @@
 
 ## Overview
 
-WebSockets provide full-duplex, bidirectional communication between clients and servers over a single TCP connection. Unlike traditional HTTP requests, WebSockets maintain a persistent connection, enabling real-time data exchange with minimal latency and overhead.
+WebSockets enable bidirectional, real-time communication between clients and servers. This guide covers integrating Socket.IO with Express for chat applications, live notifications, real-time dashboards, and collaborative features.
 
-**Key Technologies:**
-
-- **Socket.io**: Popular WebSocket library with fallbacks and enhanced features
-- **@nestjs/websockets**: NestJS integration for WebSocket gateways
-- **@nestjs/platform-socket.io**: Socket.io adapter for NestJS
-- **Redis Adapter**: For scaling WebSocket servers across multiple instances
-
-## Practical Use Cases
-
-### 1. **Chat Applications**
-
-Real-time messaging platforms (Slack, Discord, WhatsApp Web)
-
-- Instant message delivery
-- Typing indicators
-- Read receipts
-- Online presence
-
-### 2. **Live Dashboards**
-
-Analytics and monitoring dashboards
-
-- Stock price updates
-- Server metrics
-- Social media feeds
-- Live sports scores
-
-### 3. **Collaborative Tools**
-
-Multi-user editing and collaboration
-
-- Google Docs-style editing
-- Project management boards (Trello, Asana)
-- Whiteboarding tools (Miro, Figma)
-- Code pair programming
-
-### 4. **Notifications**
-
-Push notifications and alerts
-
-- Order status updates
-- System alerts
-- Social notifications
-- IoT device updates
-
-### 5. **Gaming**
-
-Real-time multiplayer games
-
-- Player movement synchronization
-- Game state updates
-- Matchmaking
-- Leaderboards
-
-## Step-by-Step Implementation
-
-### 1. Install Dependencies
+## Socket.IO Setup
 
 ```bash
-npm install @nestjs/websockets @nestjs/platform-socket.io socket.io
+npm install socket.io
 npm install -D @types/socket.io
-
-# For Redis adapter (scaling)
-npm install @socket.io/redis-adapter redis
 ```
 
-### 2. Basic WebSocket Gateway
+```typescript
+// src/config/socket.ts
+import { Server as HTTPServer } from 'http';
+import { Server as SocketIOServer } from 'socket.io';
+
+export const initializeSocket = (httpServer: HTTPServer) => {
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: process.env.CLIENT_URL || 'http://localhost:3000',
+      credentials: true,
+    },
+  });
+
+  return io;
+};
+```
 
 ```typescript
-// chat.gateway.ts
-import {
-  WebSocketGateway,
-  WebSocketServer,
-  SubscribeMessage,
-  MessageBody,
-  ConnectedSocket,
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-  OnGatewayInit,
-} from "@nestjs/websockets";
-import { Server, Socket } from "socket.io";
-import { Logger } from "@nestjs/common";
+// src/server.ts
+import express from 'express';
+import http from 'http';
+import { initializeSocket } from './config/socket';
+import socketHandlers from './sockets';
 
-interface ChatMessage {
-  username: string;
-  message: string;
-  room?: string;
-  timestamp: Date;
+const app = express();
+const httpServer = http.createServer(app);
+const io = initializeSocket(httpServer);
+
+// Initialize socket handlers
+socketHandlers(io);
+
+// Express routes
+app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+```
+
+## Authentication Middleware
+
+```typescript
+// src/middleware/socket-auth.middleware.ts
+import { Socket } from 'socket.io';
+import jwt from 'jsonwebtoken';
+import { prisma } from '../config/database';
+
+export interface AuthenticatedSocket extends Socket {
+  userId?: string;
+  user?: any;
 }
 
-@WebSocketGateway({
-  cors: {
-    origin: ["http://localhost:3000", "https://yourdomain.com"],
-    credentials: true,
-  },
-  namespace: "/chat", // Optional namespace
-})
-export class ChatGateway
-  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
-{
-  @WebSocketServer()
-  server: Server;
+export const socketAuthMiddleware = async (
+  socket: AuthenticatedSocket,
+  next: (err?: Error) => void
+) => {
+  try {
+    const token = socket.handshake.auth.token || socket.handshake.headers.authorization;
 
-  private logger: Logger = new Logger("ChatGateway");
-  private connectedUsers: Map<string, string> = new Map(); // socketId -> username
+    if (!token) {
+      return next(new Error('Authentication required'));
+    }
 
-  afterInit(server: Server) {
-    this.logger.log("WebSocket Gateway initialized");
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { id: string };
+
+    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
+
+    if (!user) {
+      return next(new Error('User not found'));
+    }
+
+    socket.userId = user.id;
+    socket.user = user;
+    next();
+  } catch (error) {
+    next(new Error('Invalid token'));
   }
+};
+```
 
-  handleConnection(client: Socket) {
-    this.logger.log(`Client connected: ${client.id}`);
+## Socket Handlers
 
-    // Send welcome message
-    client.emit("welcome", {
-      message: "Welcome to the chat!",
-      timestamp: new Date(),
+```typescript
+// src/sockets/index.ts
+import { Server } from 'socket.io';
+import { socketAuthMiddleware } from '../middleware/socket-auth.middleware';
+import chatHandler from './chat.handler';
+import notificationHandler from './notification.handler';
+
+export default (io: Server) => {
+  // Apply authentication middleware
+  io.use(socketAuthMiddleware);
+
+  io.on('connection', (socket) => {
+    console.log('Client connected:', socket.id);
+
+    // Register handlers
+    chatHandler(io, socket);
+    notificationHandler(io, socket);
+
+    socket.on('disconnect', () => {
+      console.log('Client disconnected:', socket.id);
     });
+  });
+};
+```
+
+## Chat Implementation
+
+```typescript
+// src/sockets/chat.handler.ts
+import { Server, Socket } from 'socket.io';
+import { AuthenticatedSocket } from '../middleware/socket-auth.middleware';
+import { prisma } from '../config/database';
+
+export default (io: Server, socket: Socket) => {
+  const authSocket = socket as AuthenticatedSocket;
+
+  socket.on('chat:join', async (roomId: string) => {
+    await socket.join(roomId);
+    console.log(`User ${authSocket.userId} joined room ${roomId}`);
+
+    // Notify others in the room
+    socket.to(roomId).emit('chat:user_joined', {
+      userId: authSocket.userId,
+      username: authSocket.user.name,
+    });
+  });
+
+  socket.on('chat:leave', async (roomId: string) => {
+    await socket.leave(roomId);
+    
+    socket.to(roomId).emit('chat:user_left', {
+      userId: authSocket.userId,
+      username: authSocket.user.name,
+    });
+  });
+
+  socket.on('chat:message', async (data: { roomId: string; message: string }) => {
+    const { roomId, message } = data;
+
+    // Save message to database
+    const savedMessage = await prisma.message.create({
+      data: {
+        roomId,
+        userId: authSocket.userId!,
+        content: message,
+      },
+      include: {
+        user: {
+          select: { id: true, name: true, avatar: true },
+        },
+      },
+    });
+
+    // Broadcast to room
+    io.to(roomId).emit('chat:message', savedMessage);
+  });
+
+  socket.on('chat:typing', (data: { roomId: string; isTyping: boolean }) => {
+    socket.to(data.roomId).emit('chat:typing', {
+      userId: authSocket.userId,
+      username: authSocket.user.name,
+      isTyping: data.isTyping,
+    });
+  });
+};
+```
+
+## Notification Handler
+
+```typescript
+// src/sockets/notification.handler.ts
+import { Server, Socket } from 'socket.io';
+import { AuthenticatedSocket } from '../middleware/socket-auth.middleware';
+
+export default (io: Server, socket: Socket) => {
+  const authSocket = socket as AuthenticatedSocket;
+
+  // Join user's personal notification room
+  socket.join(`user:${authSocket.userId}`);
+
+  socket.on('notification:mark_read', async (notificationId: string) => {
+    await prisma.notification.update({
+      where: { id: notificationId },
+      data: { read: true },
+    });
+
+    socket.emit('notification:read', { notificationId });
+  });
+};
+
+// Helper function to send notification to specific user
+export const sendNotificationToUser = (io: Server, userId: string, notification: any) => {
+  io.to(`user:${userId}`).emit('notification:new', notification);
+};
+```
+
+## Service Integration
+
+```typescript
+// src/services/realtime.service.ts
+import { Server } from 'socket.io';
+import { sendNotificationToUser } from '../sockets/notification.handler';
+
+export class RealtimeService {
+  private io: Server | null = null;
+
+  setIO(io: Server) {
+    this.io = io;
   }
 
-  handleDisconnect(client: Socket) {
-    const username = this.connectedUsers.get(client.id);
-    this.connectedUsers.delete(client.id);
+  async sendNotification(userId: string, notification: any) {
+    if (!this.io) {
+      console.error('Socket.IO not initialized');
+      return;
+    }
 
-    this.logger.log(`Client disconnected: ${client.id} (${username})`);
+    sendNotificationToUser(this.io, userId, notification);
+  }
+
+  async broadcastToRoom(roomId: string, event: string, data: any) {
+    if (!this.io) {
+      console.error('Socket.IO not initialized');
+      return;
+    }
+
+    this.io.to(roomId).emit(event, data);
+  }
+
+  async sendToUser(userId: string, event: string, data: any) {
+    if (!this.io) {
+      console.error('Socket.IO not initialized');
+      return;
+    }
+
+    this.io.to(`user:${userId}`).emit(event, data);
+  }
+}
+
+export default new RealtimeService();
+```
+
+```typescript
+// Update server.ts to inject IO into service
+import realtimeService from './services/realtime.service';
+
+const io = initializeSocket(httpServer);
+socketHandlers(io);
+realtimeService.setIO(io);
+```
+
+## Live Dashboard Example
+
+```typescript
+// src/sockets/dashboard.handler.ts
+import { Server, Socket } from 'socket.io';
+
+export default (io: Server, socket: Socket) => {
+  socket.on('dashboard:subscribe', (metrics: string[]) => {
+    metrics.forEach((metric) => {
+      socket.join(`metric:${metric}`);
+    });
+  });
+
+  socket.on('dashboard:unsubscribe', (metrics: string[]) => {
+    metrics.forEach((metric) => {
+      socket.leave(`metric:${metric}`);
+    });
+  });
+};
+
+// Function to push metric updates
+export const updateMetric = (io: Server, metricName: string, value: any) => {
+  io.to(`metric:${metricName}`).emit('dashboard:update', {
+    metric: metricName,
+    value,
+    timestamp: new Date(),
+  });
+};
+```
+
+## Collaborative Editing
+
+```typescript
+// src/sockets/collaboration.handler.ts
+import { Server, Socket } from 'socket.io';
+import { AuthenticatedSocket } from '../middleware/socket-auth.middleware';
+
+interface CursorPosition {
+  userId: string;
+  username: string;
+  x: number;
+  y: number;
+}
+
+export default (io: Server, socket: Socket) => {
+  const authSocket = socket as AuthenticatedSocket;
+
+  socket.on('collab:join_document', async (documentId: string) => {
+    await socket.join(`doc:${documentId}`);
+
+    // Send current active users
+    const sockets = await io.in(`doc:${documentId}`).fetchSockets();
+    const activeUsers = sockets.map((s: any) => ({
+      userId: s.userId,
+      username: s.user.name,
+    }));
+
+    socket.emit('collab:active_users', activeUsers);
 
     // Notify others
-    if (username) {
-      this.server.emit("userLeft", {
-        username,
-        timestamp: new Date(),
-      });
-    }
-  }
+    socket.to(`doc:${documentId}`).emit('collab:user_joined', {
+      userId: authSocket.userId,
+      username: authSocket.user.name,
+    });
+  });
 
-  @SubscribeMessage("joinChat")
-  handleJoinChat(
-    @MessageBody() data: { username: string },
-    @ConnectedSocket() client: Socket
-  ) {
-    this.connectedUsers.set(client.id, data.username);
+  socket.on('collab:edit', async (data: { documentId: string; changes: any }) => {
+    const { documentId, changes } = data;
 
-    // Notify all clients
-    this.server.emit("userJoined", {
-      username: data.username,
-      timestamp: new Date(),
+    // Broadcast changes to others
+    socket.to(`doc:${documentId}`).emit('collab:changes', {
+      userId: authSocket.userId,
+      changes,
     });
 
-    // Send list of online users to the new client
-    const onlineUsers = Array.from(this.connectedUsers.values());
-    client.emit("onlineUsers", { users: onlineUsers });
-
-    return { success: true, username: data.username };
-  }
-
-  @SubscribeMessage("sendMessage")
-  handleMessage(
-    @MessageBody() data: { message: string },
-    @ConnectedSocket() client: Socket
-  ) {
-    const username = this.connectedUsers.get(client.id);
-
-    if (!username) {
-      return { error: "You must join the chat first" };
-    }
-
-    const chatMessage: ChatMessage = {
-      username,
-      message: data.message,
-      timestamp: new Date(),
-    };
-
-    // Broadcast to all connected clients
-    this.server.emit("newMessage", chatMessage);
-
-    return { success: true };
-  }
-
-  @SubscribeMessage("typing")
-  handleTyping(
-    @MessageBody() data: { isTyping: boolean },
-    @ConnectedSocket() client: Socket
-  ) {
-    const username = this.connectedUsers.get(client.id);
-
-    if (username) {
-      // Broadcast to all except sender
-      client.broadcast.emit("userTyping", {
-        username,
-        isTyping: data.isTyping,
-      });
-    }
-  }
-}
-```
-
-### 3. Room-Based Communication
-
-```typescript
-// rooms.gateway.ts
-import {
-  WebSocketGateway,
-  WebSocketServer,
-  SubscribeMessage,
-  MessageBody,
-  ConnectedSocket,
-} from "@nestjs/websockets";
-import { Server, Socket } from "socket.io";
-import { Logger } from "@nestjs/common";
-
-interface RoomMessage {
-  username: string;
-  room: string;
-  message: string;
-  timestamp: Date;
-}
-
-@WebSocketGateway({ namespace: "/rooms" })
-export class RoomsGateway {
-  @WebSocketServer()
-  server: Server;
-
-  private logger: Logger = new Logger("RoomsGateway");
-
-  @SubscribeMessage("joinRoom")
-  async handleJoinRoom(
-    @MessageBody() data: { room: string; username: string },
-    @ConnectedSocket() client: Socket
-  ) {
-    // Leave all previous rooms
-    const rooms = Array.from(client.rooms).filter((room) => room !== client.id);
-    rooms.forEach((room) => client.leave(room));
-
-    // Join new room
-    await client.join(data.room);
-
-    this.logger.log(`${data.username} joined room: ${data.room}`);
-
-    // Notify room members
-    this.server.to(data.room).emit("userJoinedRoom", {
-      username: data.username,
-      room: data.room,
-      timestamp: new Date(),
+    // Optionally save to database
+    await prisma.documentVersion.create({
+      data: {
+        documentId,
+        userId: authSocket.userId!,
+        changes: JSON.stringify(changes),
+      },
     });
+  });
 
-    // Get room size
-    const roomSize =
-      this.server.sockets.adapter.rooms.get(data.room)?.size || 0;
-
-    return {
-      success: true,
-      room: data.room,
-      members: roomSize,
-    };
-  }
-
-  @SubscribeMessage("leaveRoom")
-  async handleLeaveRoom(
-    @MessageBody() data: { room: string; username: string },
-    @ConnectedSocket() client: Socket
-  ) {
-    await client.leave(data.room);
-
-    this.logger.log(`${data.username} left room: ${data.room}`);
-
-    // Notify room members
-    this.server.to(data.room).emit("userLeftRoom", {
-      username: data.username,
-      room: data.room,
-      timestamp: new Date(),
+  socket.on('collab:cursor_move', (data: { documentId: string; x: number; y: number }) => {
+    socket.to(`doc:${data.documentId}`).emit('collab:cursor_update', {
+      userId: authSocket.userId,
+      username: authSocket.user.name,
+      x: data.x,
+      y: data.y,
     });
-
-    return { success: true };
-  }
-
-  @SubscribeMessage("sendRoomMessage")
-  handleRoomMessage(
-    @MessageBody() data: { room: string; username: string; message: string },
-    @ConnectedSocket() client: Socket
-  ) {
-    const roomMessage: RoomMessage = {
-      username: data.username,
-      room: data.room,
-      message: data.message,
-      timestamp: new Date(),
-    };
-
-    // Send only to room members
-    this.server.to(data.room).emit("newRoomMessage", roomMessage);
-
-    return { success: true };
-  }
-
-  @SubscribeMessage("getRoomMembers")
-  async handleGetRoomMembers(
-    @MessageBody() data: { room: string },
-    @ConnectedSocket() client: Socket
-  ) {
-    const room = this.server.sockets.adapter.rooms.get(data.room);
-
-    if (!room) {
-      return { members: [] };
-    }
-
-    // Get socket IDs in the room
-    const socketIds = Array.from(room);
-
-    return {
-      room: data.room,
-      memberCount: socketIds.length,
-      socketIds,
-    };
-  }
-}
+  });
+};
 ```
 
-### 4. Authentication with WebSockets
+## Presence System
 
 ```typescript
-// auth.gateway.ts
-import {
-  WebSocketGateway,
-  WebSocketServer,
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-} from "@nestjs/websockets";
-import { Server, Socket } from "socket.io";
-import { Logger, UnauthorizedException } from "@nestjs/common";
-import { JwtService } from "@nestjs/jwt";
+// src/services/presence.service.ts
+import { Server } from 'socket.io';
+import { redis } from '../config/redis';
 
-interface AuthenticatedSocket extends Socket {
-  user?: {
-    id: string;
-    email: string;
-    username: string;
-  };
-}
+export class PresenceService {
+  async setUserOnline(userId: string, socketId: string) {
+    await redis.sadd(`user:${userId}:sockets`, socketId);
+    await redis.set(`user:${userId}:status`, 'online');
+    await redis.expire(`user:${userId}:status`, 3600);
+  }
 
-@WebSocketGateway({
-  cors: {
-    origin: process.env.FRONTEND_URL,
-    credentials: true,
-  },
-})
-export class AuthGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer()
-  server: Server;
-
-  private logger: Logger = new Logger("AuthGateway");
-
-  constructor(private jwtService: JwtService) {}
-
-  async handleConnection(client: AuthenticatedSocket) {
-    try {
-      // Extract token from handshake
-      const token = this.extractToken(client);
-
-      if (!token) {
-        throw new UnauthorizedException("No token provided");
-      }
-
-      // Verify JWT token
-      const payload = await this.jwtService.verifyAsync(token);
-
-      // Attach user to socket
-      client.user = {
-        id: payload.sub,
-        email: payload.email,
-        username: payload.username,
-      };
-
-      // Join user-specific room for targeted messages
-      await client.join(`user:${payload.sub}`);
-
-      this.logger.log(
-        `Authenticated user connected: ${client.user.username} (${client.id})`
-      );
-
-      // Send authentication success
-      client.emit("authenticated", {
-        user: client.user,
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      this.logger.error(`Authentication failed: ${error.message}`);
-
-      client.emit("authError", {
-        message: "Authentication failed",
-        error: error.message,
-      });
-
-      client.disconnect();
+  async setUserOffline(userId: string, socketId: string) {
+    await redis.srem(`user:${userId}:sockets`, socketId);
+    
+    const remainingSockets = await redis.smembers(`user:${userId}:sockets`);
+    
+    if (remainingSockets.length === 0) {
+      await redis.set(`user:${userId}:status`, 'offline');
+      await redis.set(`user:${userId}:last_seen`, Date.now());
     }
   }
 
-  handleDisconnect(client: AuthenticatedSocket) {
-    if (client.user) {
-      this.logger.log(
-        `Authenticated user disconnected: ${client.user.username}`
-      );
-    }
+  async getUserStatus(userId: string): Promise<'online' | 'offline'> {
+    const status = await redis.get(`user:${userId}:status`);
+    return (status as 'online' | 'offline') || 'offline';
   }
 
-  private extractToken(client: Socket): string | null {
-    // Method 1: From query parameters
-    const queryToken = client.handshake.query.token as string;
-    if (queryToken) return queryToken;
-
-    // Method 2: From headers
-    const authHeader = client.handshake.headers.authorization;
-    if (authHeader?.startsWith("Bearer ")) {
-      return authHeader.substring(7);
-    }
-
-    // Method 3: From auth object
-    const authToken = client.handshake.auth?.token;
-    if (authToken) return authToken;
-
-    return null;
-  }
-
-  // Send message to specific user
-  sendToUser(userId: string, event: string, data: any) {
-    this.server.to(`user:${userId}`).emit(event, data);
-  }
-
-  // Broadcast to all authenticated users
-  broadcastToAuthenticated(event: string, data: any) {
-    this.server.emit(event, data);
+  async getOnlineUsers(userIds: string[]): Promise<string[]> {
+    const pipeline = redis.pipeline();
+    userIds.forEach((id) => pipeline.get(`user:${id}:status`));
+    
+    const results = await pipeline.exec();
+    
+    return userIds.filter((_, index) => results?.[index]?.[1] === 'online');
   }
 }
+
+export default new PresenceService();
 ```
 
-### 5. Redis Adapter for Scaling
+## Rate Limiting
 
 ```typescript
-// websocket.adapter.ts
-import { IoAdapter } from "@nestjs/platform-socket.io";
-import { ServerOptions } from "socket.io";
-import { createAdapter } from "@socket.io/redis-adapter";
-import { createClient } from "redis";
+// src/middleware/socket-rate-limit.middleware.ts
+import { Socket } from 'socket.io';
+import { RateLimiterMemory } from 'rate-limiter-flexible';
 
-export class RedisIoAdapter extends IoAdapter {
-  private adapterConstructor: ReturnType<typeof createAdapter>;
+const rateLimiter = new RateLimiterMemory({
+  points: 10, // 10 requests
+  duration: 1, // per 1 second
+});
 
-  async connectToRedis(): Promise<void> {
-    const pubClient = createClient({
-      url: process.env.REDIS_URL || "redis://localhost:6379",
-    });
-    const subClient = pubClient.duplicate();
-
-    await Promise.all([pubClient.connect(), subClient.connect()]);
-
-    this.adapterConstructor = createAdapter(pubClient, subClient);
+export const socketRateLimitMiddleware = async (
+  socket: Socket,
+  next: (err?: Error) => void
+) => {
+  try {
+    await rateLimiter.consume(socket.id);
+    next();
+  } catch (error) {
+    next(new Error('Rate limit exceeded'));
   }
-
-  createIOServer(port: number, options?: ServerOptions): any {
-    const server = super.createIOServer(port, options);
-    server.adapter(this.adapterConstructor);
-    return server;
-  }
-}
+};
 ```
 
-```typescript
-// main.ts
-import { NestFactory } from "@nestjs/core";
-import { AppModule } from "./app.module";
-import { RedisIoAdapter } from "./websocket.adapter";
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  // Use Redis adapter for WebSocket scaling
-  const redisIoAdapter = new RedisIoAdapter(app);
-  await redisIoAdapter.connectToRedis();
-  app.useWebSocketAdapter(redisIoAdapter);
-
-  await app.listen(3000);
-}
-bootstrap();
-```
-
-### 6. Client-Side Implementation (TypeScript/React)
+## Client Example (React)
 
 ```typescript
-// useSocket.ts
-import { useEffect, useState, useCallback } from "react";
-import { io, Socket } from "socket.io-client";
+// client/hooks/useSocket.ts
+import { useEffect, useState } from 'react';
+import { io, Socket } from 'socket.io-client';
 
-interface UseSocketOptions {
-  namespace?: string;
-  token?: string;
-}
-
-export function useSocket(options: UseSocketOptions = {}) {
+export const useSocket = (token: string) => {
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
+  const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const socketInstance = io(
-      `${process.env.NEXT_PUBLIC_WS_URL || "http://localhost:3000"}${
-        options.namespace || ""
-      }`,
-      {
-        auth: {
-          token: options.token,
-        },
-        transports: ["websocket", "polling"], // Fallback to polling
-      }
-    );
-
-    socketInstance.on("connect", () => {
-      console.log("Socket connected:", socketInstance.id);
-      setIsConnected(true);
+    const newSocket = io(process.env.NEXT_PUBLIC_API_URL!, {
+      auth: { token },
     });
 
-    socketInstance.on("disconnect", () => {
-      console.log("Socket disconnected");
-      setIsConnected(false);
+    newSocket.on('connect', () => {
+      console.log('Connected to server');
+      setConnected(true);
     });
 
-    socketInstance.on("connect_error", (error) => {
-      console.error("Connection error:", error);
+    newSocket.on('disconnect', () => {
+      console.log('Disconnected from server');
+      setConnected(false);
     });
 
-    setSocket(socketInstance);
+    setSocket(newSocket);
 
     return () => {
-      socketInstance.disconnect();
+      newSocket.close();
     };
-  }, [options.namespace, options.token]);
+  }, [token]);
 
-  const emit = useCallback(
-    (event: string, data?: any) => {
-      if (socket) {
-        socket.emit(event, data);
-      }
-    },
-    [socket]
-  );
-
-  const on = useCallback(
-    (event: string, handler: (...args: any[]) => void) => {
-      if (socket) {
-        socket.on(event, handler);
-        return () => socket.off(event, handler);
-      }
-    },
-    [socket]
-  );
-
-  return {
-    socket,
-    isConnected,
-    emit,
-    on,
-  };
-}
+  return { socket, connected };
+};
 ```
 
 ```typescript
-// ChatComponent.tsx
-import React, { useState, useEffect } from "react";
-import { useSocket } from "./useSocket";
+// client/components/Chat.tsx
+import { useEffect, useState } from 'react';
+import { useSocket } from '../hooks/useSocket';
 
-interface Message {
-  username: string;
-  message: string;
-  timestamp: Date;
-}
-
-export function ChatComponent() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputMessage, setInputMessage] = useState("");
-  const [username, setUsername] = useState("");
-  const [hasJoined, setHasJoined] = useState(false);
-
-  const { socket, isConnected, emit, on } = useSocket({
-    namespace: "/chat",
-  });
+export const Chat = ({ roomId, token }: { roomId: string; token: string }) => {
+  const { socket } = useSocket(token);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [input, setInput] = useState('');
 
   useEffect(() => {
     if (!socket) return;
 
-    const unsubscribe = on("newMessage", (message: Message) => {
+    socket.emit('chat:join', roomId);
+
+    socket.on('chat:message', (message) => {
       setMessages((prev) => [...prev, message]);
     });
 
-    return unsubscribe;
-  }, [socket, on]);
+    return () => {
+      socket.emit('chat:leave', roomId);
+      socket.off('chat:message');
+    };
+  }, [socket, roomId]);
 
-  const handleJoin = () => {
-    if (username.trim()) {
-      emit("joinChat", { username });
-      setHasJoined(true);
+  const sendMessage = () => {
+    if (socket && input.trim()) {
+      socket.emit('chat:message', { roomId, message: input });
+      setInput('');
     }
   };
-
-  const handleSendMessage = () => {
-    if (inputMessage.trim()) {
-      emit("sendMessage", { message: inputMessage });
-      setInputMessage("");
-    }
-  };
-
-  if (!hasJoined) {
-    return (
-      <div className="p-4">
-        <input
-          type="text"
-          placeholder="Enter username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          className="border p-2 rounded"
-        />
-        <button
-          onClick={handleJoin}
-          className="ml-2 bg-blue-500 text-white px-4 py-2 rounded"
-        >
-          Join Chat
-        </button>
-      </div>
-    );
-  }
 
   return (
-    <div className="flex flex-col h-screen p-4">
-      <div className="flex-1 overflow-y-auto border p-4 mb-4">
-        {messages.map((msg, index) => (
-          <div key={index} className="mb-2">
-            <strong>{msg.username}:</strong> {msg.message}
-            <span className="text-xs text-gray-500 ml-2">
-              {new Date(msg.timestamp).toLocaleTimeString()}
-            </span>
+    <div>
+      <div>
+        {messages.map((msg, i) => (
+          <div key={i}>
+            <strong>{msg.user.name}:</strong> {msg.content}
           </div>
         ))}
       </div>
-
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={inputMessage}
-          onChange={(e) => setInputMessage(e.target.value)}
-          onKeyPress={(e) => e.key === "Enter" && handleSendMessage()}
-          placeholder="Type a message..."
-          className="flex-1 border p-2 rounded"
-          disabled={!isConnected}
-        />
-        <button
-          onClick={handleSendMessage}
-          disabled={!isConnected}
-          className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50"
-        >
-          Send
-        </button>
-      </div>
-
-      <div className="text-sm mt-2">
-        Status: {isConnected ? "🟢 Connected" : "🔴 Disconnected"}
-      </div>
+      <input value={input} onChange={(e) => setInput(e.target.value)} />
+      <button onClick={sendMessage}>Send</button>
     </div>
   );
-}
+};
+```
+
+## Testing
+
+```typescript
+// src/__tests__/socket.test.ts
+import { io as Client, Socket } from 'socket.io-client';
+import { Server } from 'http';
+import app from '../server';
+
+describe('WebSocket Tests', () => {
+  let httpServer: Server;
+  let clientSocket: Socket;
+  let token: string;
+
+  beforeAll((done) => {
+    httpServer = app.listen(() => {
+      const port = (httpServer.address() as any).port;
+      clientSocket = Client(`http://localhost:${port}`, {
+        auth: { token },
+      });
+
+      clientSocket.on('connect', done);
+    });
+  });
+
+  afterAll(() => {
+    clientSocket.close();
+    httpServer.close();
+  });
+
+  it('should connect and authenticate', (done) => {
+    expect(clientSocket.connected).toBe(true);
+    done();
+  });
+
+  it('should join a room and receive messages', (done) => {
+    const roomId = 'test-room';
+
+    clientSocket.emit('chat:join', roomId);
+
+    clientSocket.on('chat:message', (message) => {
+      expect(message.content).toBe('Hello');
+      done();
+    });
+
+    clientSocket.emit('chat:message', { roomId, message: 'Hello' });
+  });
+});
 ```
 
 ## Best Practices
 
-### 1. **Connection Management**
-
-```typescript
-// Implement reconnection logic
-const socket = io(url, {
-  reconnection: true,
-  reconnectionDelay: 1000,
-  reconnectionDelayMax: 5000,
-  reconnectionAttempts: 5,
-});
-
-// Handle reconnection events
-socket.on("reconnect", (attemptNumber) => {
-  console.log(`Reconnected after ${attemptNumber} attempts`);
-  // Re-join rooms, re-subscribe to events
-});
-```
-
-### 2. **Rate Limiting**
-
-```typescript
-// Implement rate limiting for WebSocket events
-import { RateLimiterMemory } from 'rate-limiter-flexible';
-
-const rateLimiter = new RateLimiterMemory({
-  points: 10, // 10 messages
-  duration: 1, // per 1 second
-});
-
-@SubscribeMessage('sendMessage')
-async handleMessage(
-  @MessageBody() data: any,
-  @ConnectedSocket() client: Socket,
-) {
-  try {
-    await rateLimiter.consume(client.id);
-    // Process message
-  } catch {
-    client.emit('error', { message: 'Rate limit exceeded' });
-  }
-}
-```
-
-### 3. **Message Validation**
-
-```typescript
-// Use DTOs for WebSocket messages
-import { IsString, IsNotEmpty, MaxLength } from 'class-validator';
-
-export class SendMessageDto {
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(500)
-  message: string;
-}
-
-// Validate in gateway
-@UsePipes(new ValidationPipe())
-@SubscribeMessage('sendMessage')
-handleMessage(@MessageBody() dto: SendMessageDto) {
-  // Message is validated
-}
-```
-
-### 4. **Error Handling**
-
-```typescript
-// Comprehensive error handling
-@SubscribeMessage('sendMessage')
-handleMessage(@MessageBody() data: any, @ConnectedSocket() client: Socket) {
-  try {
-    // Process message
-    return { success: true };
-  } catch (error) {
-    this.logger.error(`Error processing message: ${error.message}`);
-    client.emit('error', {
-      message: 'Failed to send message',
-      code: 'MESSAGE_SEND_ERROR',
-    });
-    return { success: false, error: error.message };
-  }
-}
-```
-
-### 5. **Memory Management**
-
-```typescript
-// Clean up on disconnect
-handleDisconnect(client: Socket) {
-  // Remove from tracking maps
-  this.connectedUsers.delete(client.id);
-  this.userSessions.delete(client.id);
-
-  // Leave all rooms
-  const rooms = Array.from(client.rooms);
-  rooms.forEach(room => client.leave(room));
-
-  // Clear any timers or intervals
-  this.clearUserTimers(client.id);
-}
-```
-
-### 6. **Security Considerations**
-
-- Always validate and sanitize incoming messages
-- Implement authentication for sensitive operations
-- Use CORS properly to restrict origins
-- Rate limit connections and messages
-- Encrypt sensitive data in transit (use WSS)
-- Validate room access permissions
-
-### 7. **Performance Optimization**
-
-- Use binary data when possible (ArrayBuffer, Buffer)
-- Implement message batching for high-frequency updates
-- Use compression for large messages
-- Monitor and limit room sizes
-- Implement connection pooling
-
-### 8. **Monitoring and Debugging**
-
-```typescript
-// Add comprehensive logging
-afterInit(server: Server) {
-  this.logger.log('WebSocket server initialized');
-
-  // Monitor connections
-  setInterval(() => {
-    const clientsCount = this.server.sockets.sockets.size;
-    const roomsCount = this.server.sockets.adapter.rooms.size;
-    this.logger.debug(`Clients: ${clientsCount}, Rooms: ${roomsCount}`);
-  }, 60000); // Every minute
-}
-```
+1. **Authenticate connections** before allowing socket operations
+2. **Use rooms** for efficient broadcasting
+3. **Implement rate limiting** to prevent abuse
+4. **Handle reconnection** gracefully on the client
+5. **Validate all incoming data** from sockets
+6. **Store connection state** in Redis for scaling
+7. **Use namespaces** to organize different features
+8. **Emit acknowledgments** for critical messages
+9. **Monitor socket connections** and memory usage
+10. **Implement backpressure** for high-throughput scenarios
 
 ## Key Takeaways
 
-✅ **WebSockets enable real-time bidirectional communication**  
-✅ **Use Socket.io for enhanced features and fallbacks**  
-✅ **Implement authentication to secure connections**  
-✅ **Use rooms for targeted message broadcasting**  
-✅ **Scale with Redis adapter across multiple servers**  
-✅ **Always validate and rate-limit incoming messages**  
-✅ **Handle reconnection gracefully on client side**  
-✅ **Monitor connection counts and performance metrics**  
-✅ **Clean up resources properly on disconnect**  
-✅ **Use namespaces to separate different features**
+1. **Socket.IO** simplifies WebSocket implementation
+2. **Authentication** is critical for security
+3. **Rooms** enable efficient group communication
+4. **Presence systems** track online/offline status
+5. **Rate limiting** prevents abuse
+6. **Redis** helps scale across multiple servers
+7. **Client reconnection** improves reliability
+8. **Testing** ensures real-time features work correctly
 
-WebSockets are essential for modern real-time applications, providing instant updates and interactive experiences that traditional HTTP polling cannot match.
+Real-time features dramatically improve user experience when implemented correctly.

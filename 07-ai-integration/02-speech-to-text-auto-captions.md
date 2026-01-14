@@ -24,11 +24,9 @@ npm install openai form-data
 
 ```typescript
 // src/services/whisper.service.ts
-import { Injectable } from "@nestjs/common";
 import { OpenAI } from "openai";
 import * as fs from "fs";
 
-@Injectable()
 export class WhisperService {
   private openai: OpenAI;
 
@@ -98,7 +96,6 @@ const result = await whisperService.transcribeAudio("/path/to/audio.mp3", {
 
 ```typescript
 // src/services/caption-generator.service.ts
-import { Injectable } from "@nestjs/common";
 import { WhisperService } from "./whisper.service";
 import * as fs from "fs/promises";
 
@@ -109,7 +106,6 @@ interface CaptionSegment {
   text: string;
 }
 
-@Injectable()
 export class CaptionGeneratorService {
   constructor(private readonly whisperService: WhisperService) {}
 
@@ -271,11 +267,9 @@ npm install @google-cloud/speech
 
 ```typescript
 // src/services/google-stt.service.ts
-import { Injectable } from "@nestjs/common";
 import speech from "@google-cloud/speech";
 import { Readable } from "stream";
 
-@Injectable()
 export class GoogleSTTService {
   private client: speech.SpeechClient;
 
@@ -408,7 +402,6 @@ npm install @aws-sdk/client-transcribe @aws-sdk/client-s3
 
 ```typescript
 // src/services/aws-transcribe.service.ts
-import { Injectable } from "@nestjs/common";
 import {
   TranscribeClient,
   StartTranscriptionJobCommand,
@@ -417,7 +410,6 @@ import {
 } from "@aws-sdk/client-transcribe";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 
-@Injectable()
 export class AWSTranscribeService {
   private transcribeClient: TranscribeClient;
   private s3Client: S3Client;
@@ -516,7 +508,6 @@ import {
   SubscribeMessage,
   OnGatewayConnection,
   OnGatewayDisconnect,
-} from "@nestjs/websockets";
 import { Server, Socket } from "socket.io";
 import { WhisperService } from "../services/whisper.service";
 import * as fs from "fs";
@@ -724,7 +715,6 @@ export const LiveTranscription: React.FC = () => {
 
 ```typescript
 // src/services/multi-language-transcription.service.ts
-import { Injectable } from "@nestjs/common";
 import { WhisperService } from "./whisper.service";
 
 interface LanguageConfig {
@@ -733,7 +723,6 @@ interface LanguageConfig {
   whisperCode: string;
 }
 
-@Injectable()
 export class MultiLanguageTranscriptionService {
   private supportedLanguages: LanguageConfig[] = [
     { code: "en", name: "English", whisperCode: "en" },

@@ -66,9 +66,7 @@ Step-up authentication
 ```typescript
 // services/password.service.ts
 import * as argon2 from "argon2";
-import { Injectable } from "@nestjs/common";
 
-@Injectable()
 export class PasswordService {
   // Hash password using Argon2id (recommended)
   async hash(password: string): Promise<string> {
@@ -103,7 +101,6 @@ export class PasswordService {
 // Alternative: bcrypt (also secure but slower for attackers)
 import * as bcrypt from "bcrypt";
 
-@Injectable()
 export class BcryptPasswordService {
   private readonly saltRounds = 12; // Higher = more secure but slower
 
@@ -126,7 +123,7 @@ import {
   ValidationOptions,
   ValidatorConstraint,
   ValidatorConstraintInterface,
-} from "class-validator";
+} from "express-validator";
 
 @ValidatorConstraint({ async: false })
 export class IsStrongPasswordConstraint
@@ -195,11 +192,9 @@ export function IsStrongPassword(validationOptions?: ValidationOptions) {
 }
 
 // services/password-breach-checker.service.ts
-import { Injectable } from "@nestjs/common";
 import * as crypto from "crypto";
 import axios from "axios";
 
-@Injectable()
 export class PasswordBreachCheckerService {
   // Check password against Have I Been Pwned API
   async isBreached(password: string): Promise<boolean> {
@@ -234,9 +229,6 @@ export class PasswordBreachCheckerService {
 
 ```typescript
 // services/jwt.service.ts
-import { Injectable } from "@nestjs/common";
-import { JwtService as NestJwtService } from "@nestjs/jwt";
-import { ConfigService } from "@nestjs/config";
 import * as crypto from "crypto";
 
 export interface TokenPayload {
@@ -248,7 +240,6 @@ export interface TokenPayload {
   jti?: string; // JWT ID for token revocation
 }
 
-@Injectable()
 export class JwtService {
   constructor(
     private jwtService: NestJwtService,
@@ -340,9 +331,7 @@ export class JwtService {
 
 ```typescript
 // services/auth.service.ts
-import { Injectable, UnauthorizedException } from "@nestjs/common";
 
-@Injectable()
 export class AuthService {
   constructor(
     private jwtService: JwtService,
@@ -446,11 +435,9 @@ export class AuthService {
 
 ```typescript
 // services/mfa.service.ts
-import { Injectable } from "@nestjs/common";
 import * as speakeasy from "speakeasy";
 import * as QRCode from "qrcode";
 
-@Injectable()
 export class MfaService {
   // Generate MFA secret
   generateSecret(email: string): { secret: string; qrCode: string } {
@@ -493,7 +480,7 @@ export class MfaService {
 }
 
 // controllers/mfa.controller.ts
-@Controller("mfa")
+
 export class MfaController {
   constructor(
     private mfaService: MfaService,
@@ -634,10 +621,8 @@ export const sessionConfig: session.SessionOptions = {
 };
 
 // middleware/session-security.middleware.ts
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 
-@Injectable()
 export class SessionSecurityMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction) {
     if (req.session && req.session.userId) {
@@ -678,11 +663,9 @@ export class SessionSecurityMiddleware implements NestMiddleware {
 
 ```typescript
 // services/brute-force-protection.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectRedis } from "@nestjs-modules/ioredis";
+import { InjectRedis } from "ioredis";
 import Redis from "ioredis";
 
-@Injectable()
 export class BruteForceProtectionService {
   constructor(@InjectRedis() private readonly redis: Redis) {}
 
@@ -723,7 +706,7 @@ export class BruteForceProtectionService {
 }
 
 // guards/brute-force.guard.ts
-@Injectable()
+
 export class BruteForceGuard implements CanActivate {
   constructor(private bruteForceService: BruteForceProtectionService) {}
 

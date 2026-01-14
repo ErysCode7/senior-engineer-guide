@@ -111,14 +111,12 @@ src/
 └── main.ts
 
 // modules/orders/orders.module.ts
-import { Module } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { OrdersController } from './orders.controller';
 import { OrdersRepository } from './orders.repository';
 import { ProductsModule } from '../products/products.module';
 import { PaymentsModule } from '../payments/payments.module';
 
-@Module({
   imports: [
     ProductsModule, // Import other modules
     PaymentsModule,
@@ -130,12 +128,10 @@ import { PaymentsModule } from '../payments/payments.module';
 export class OrdersModule {}
 
 // modules/orders/orders.service.ts
-import { Injectable } from '@nestjs/common';
 import { ProductsService } from '../products/products.service';
 import { PaymentsService } from '../payments/payments.service';
 import { OrdersRepository } from './orders.repository';
 
-@Injectable()
 export class OrdersService {
   constructor(
     private ordersRepository: OrdersRepository,
@@ -198,7 +194,7 @@ export class OrdersService {
 
 ```typescript
 // Simple transaction management
-@Injectable()
+
 export class OrdersService {
   constructor(
     private dataSource: DataSource,
@@ -240,7 +236,7 @@ export class OrdersService {
 }
 
 // Simple debugging and testing
-@Injectable()
+
 export class OrdersService {
   // Direct method calls, easy to trace
   async createOrder(data: CreateOrderDto) {
@@ -260,13 +256,11 @@ export class OrdersService {
 ```typescript
 // Service 1: User Service
 // user-service/src/main.ts
-import { NestFactory } from "@nestjs/core";
-import { Transport, MicroserviceOptions } from "@nestjs/microservices";
 import { AppModule } from "./app.module";
 
 async function bootstrap() {
   // HTTP API
-  const app = await NestFactory.create(AppModule);
+  const app = express();
   app.enableCors();
   await app.listen(3001);
 
@@ -286,10 +280,7 @@ async function bootstrap() {
 bootstrap();
 
 // user-service/src/users/users.controller.ts
-import { Controller } from "@nestjs/common";
-import { MessagePattern, Payload } from "@nestjs/microservices";
 
-@Controller("users")
 export class UsersController {
   constructor(private usersService: UsersService) {}
 
@@ -313,11 +304,8 @@ export class UsersController {
 
 // Service 2: Order Service
 // order-service/src/orders/orders.service.ts
-import { Injectable, Inject } from "@nestjs/common";
-import { ClientProxy } from "@nestjs/microservices";
 import { firstValueFrom } from "rxjs";
 
-@Injectable()
 export class OrdersService {
   constructor(
     @Inject("USER_SERVICE") private userClient: ClientProxy,
@@ -399,11 +387,10 @@ export class OrdersService {
 
 ```typescript
 // api-gateway/src/main.ts
-import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = express();
 
   // Global prefix
   app.setGlobalPrefix("api");
@@ -420,10 +407,7 @@ async function bootstrap() {
 bootstrap();
 
 // api-gateway/src/gateway.module.ts
-import { Module } from "@nestjs/common";
-import { ClientsModule, Transport } from "@nestjs/microservices";
 
-@Module({
   imports: [
     ClientsModule.register([
       {
@@ -447,11 +431,8 @@ import { ClientsModule, Transport } from "@nestjs/microservices";
 export class GatewayModule {}
 
 // api-gateway/src/controllers/orders.controller.ts
-import { Controller, Post, Body, Inject } from "@nestjs/common";
-import { ClientProxy } from "@nestjs/microservices";
 import { firstValueFrom } from "rxjs";
 
-@Controller("orders")
 export class OrdersController {
   constructor(@Inject("ORDER_SERVICE") private orderClient: ClientProxy) {}
 
@@ -489,10 +470,7 @@ export class PaymentProcessedEvent {
 }
 
 // order-service/src/orders/orders.service.ts
-import { Injectable } from "@nestjs/common";
-import { EventEmitter2 } from "@nestjs/event-emitter";
 
-@Injectable()
 export class OrdersService {
   constructor(
     private ordersRepository: OrdersRepository,
@@ -513,11 +491,8 @@ export class OrdersService {
 }
 
 // payment-service/src/payments/payments.listener.ts
-import { Injectable } from "@nestjs/common";
-import { OnEvent } from "@nestjs/event-emitter";
 import { OrderCreatedEvent, PaymentProcessedEvent } from "@shared/events";
 
-@Injectable()
 export class PaymentsListener {
   constructor(
     private paymentsService: PaymentsService,
@@ -547,7 +522,7 @@ export class PaymentsListener {
 }
 
 // notification-service/src/notifications/notifications.listener.ts
-@Injectable()
+
 export class NotificationsListener {
   constructor(private notificationsService: NotificationsService) {}
 
@@ -573,10 +548,7 @@ export class NotificationsListener {
 ```typescript
 // Choreography-based saga
 // order-service/src/sagas/order-saga.ts
-import { Injectable } from "@nestjs/common";
-import { OnEvent } from "@nestjs/event-emitter";
 
-@Injectable()
 export class OrderSaga {
   constructor(
     private ordersService: OrdersService,
@@ -607,10 +579,8 @@ export class OrderSaga {
 
 ```typescript
 // Circuit breaker for service-to-service calls
-import { Injectable } from "@nestjs/common";
 import * as CircuitBreaker from "opossum";
 
-@Injectable()
 export class ResilientOrdersService {
   private userServiceBreaker: CircuitBreaker;
   private productServiceBreaker: CircuitBreaker;
@@ -684,7 +654,7 @@ export class ResilientOrdersService {
 // 5. Migrate data incrementally
 
 // Strangler Fig Pattern
-@Injectable()
+
 export class OrdersService {
   constructor(
     private ordersRepository: OrdersRepository,

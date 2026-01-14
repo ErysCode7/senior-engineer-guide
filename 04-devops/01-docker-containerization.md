@@ -79,7 +79,7 @@ docker --version
 docker run hello-world
 ```
 
-### 2. Basic Dockerfile for Node.js/NestJS
+### 2. Basic Dockerfile for Node.js/Express
 
 ```dockerfile
 # Dockerfile
@@ -134,7 +134,7 @@ FROM node:18-alpine AS production
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nestjs -u 1001
+    adduser -S nodejs -u 1001
 
 WORKDIR /app
 
@@ -519,34 +519,51 @@ http {
 ### 11. Health Check Endpoint
 
 ```typescript
-// health.controller.ts
-import { Controller, Get } from "@nestjs/common";
-import {
-  HealthCheck,
-  HealthCheckService,
-  TypeOrmHealthIndicator,
-  MemoryHealthIndicator,
-  DiskHealthIndicator,
-} from "@nestjs/terminus";
+// src/routes/health.routes.ts
+import { Router, Request, Response } from "express";
+import { AppDataSource } from "../database/data-source"; // TypeORM example
 
-@Controller("health")
-export class HealthController {
-  constructor(
-    private health: HealthCheckService,
-    private db: TypeOrmHealthIndicator,
-    private memory: MemoryHealthIndicator,
-    private disk: DiskHealthIndicator
-  ) {}
+const router = Router();
 
-  @Get()
-  @HealthCheck()
-  check() {
-    return this.health.check([
-      // Database health
-      () => this.db.pingCheck("database"),
+router.get("/health", async (req: Request, res: Response) => {
+  try {
+    const checks = {
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      database: "unknown",
+      memory: {
+        used: process.memoryUsage().heapUsed,
+        total: process.memoryUsage().heapTotal,
+        limit: 150 * 1024 * 1024,
+      },
+    };
 
-      // Memory heap check
-      () => this.memory.checkHeap("memory_heap", 150 * 1024 * 1024),
+    // Database health check
+    try {
+      await AppDataSource.query("SELECT 1");
+      checks.database = "healthy";
+    } catch (error) {
+      checks.database = "unhealthy";
+      checks.status = "degraded";
+    }
+
+    // Memory check
+    if (checks.memory.used > checks.memory.limit) {
+      checks.status = "degraded";
+    }
+
+    const statusCode = checks.status === "ok" ? 200 : 503;
+    res.status(statusCode).json(checks);
+  } catch (error) {
+    res.status(503).json({
+      status: "error",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+export default router;
 
       // Memory RSS check
       () => this.memory.checkRSS("memory_rss", 150 * 1024 * 1024),
@@ -584,12 +601,12 @@ WORKDIR /app
 
 # Create non-root user
 RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nestjs
+RUN adduser --system --uid 1001 nodejs
 
-# Copy dependencies and build
-COPY --from=deps --chown=nestjs:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nestjs:nodejs /app/dist ./dist
-COPY --from=builder --chown=nestjs:nodejs /app/package*.json ./
+# Copy dependencies and build artifacts
+COPY --from=deps --chown=nodejs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
 
 # Set environment
 ENV NODE_ENV=production
@@ -666,8 +683,8 @@ FROM node:18.19.0-alpine3.19
 
 ```dockerfile
 RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nestjs -u 1001
-USER nestjs
+RUN adduser -S nodejs -u 1001
+USER nodejs
 ```
 
 ### 6. **Health Checks**

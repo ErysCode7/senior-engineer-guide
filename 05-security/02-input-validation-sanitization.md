@@ -59,7 +59,7 @@ Prevent injection attacks
 - Command injection prevention
 - LDAP injection prevention
 
-## NestJS Validation with class-validator
+## NestJS Validation with express-validator
 
 ### 1. Basic DTO Validation
 
@@ -82,7 +82,7 @@ import {
   IsArray,
   ArrayMinSize,
   ArrayMaxSize,
-} from "class-validator";
+} from "express-validator";
 import { Transform, Type } from "class-transformer";
 
 export enum UserRole {
@@ -193,12 +193,11 @@ import {
   ValidatorConstraint,
   ValidatorConstraintInterface,
   ValidationArguments,
-} from "class-validator";
-import { Injectable } from "@nestjs/common";
+} from "express-validator";
 import { UserRepository } from "../repositories/user.repository";
 
 @ValidatorConstraint({ async: true })
-@Injectable()
+
 export class IsUsernameUniqueConstraint
   implements ValidatorConstraintInterface
 {
@@ -279,10 +278,8 @@ import {
   Body,
   ValidationPipe,
   UsePipes,
-} from "@nestjs/common";
 import { CreateUserDto } from "../dtos/create-user.dto";
 
-@Controller("users")
 export class UserController {
   @Post()
   @UsePipes(
@@ -451,7 +448,7 @@ export class Sanitizer {
 }
 
 // src/dtos/create-post.dto.ts
-import { IsString, MaxLength } from "class-validator";
+import { IsString, MaxLength } from "express-validator";
 import { Transform } from "class-transformer";
 import { Sanitizer } from "../utils/sanitizer.util";
 
@@ -521,7 +518,6 @@ const UserSchema = new Schema({
 
 ```typescript
 // src/validators/file-upload.validator.ts
-import { FileValidator } from "@nestjs/common";
 
 export class FileTypeValidator extends FileValidator {
   constructor(private allowedTypes: string[]) {
@@ -562,13 +558,10 @@ import {
   ParseFilePipe,
   MaxFileSizeValidator,
   FileTypeValidator as NestFileTypeValidator,
-} from "@nestjs/common";
-import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
 import * as path from "path";
 import { v4 as uuidv4 } from "uuid";
 
-@Controller("upload")
 export class UploadController {
   @Post("image")
   @UseInterceptors(
@@ -623,7 +616,7 @@ export class UploadController {
 
 ```typescript
 // src/validators/url.validator.ts
-import { IsUrl } from "class-validator";
+import { IsUrl } from "express-validator";
 import { Transform } from "class-transformer";
 
 export class UrlDto {
@@ -705,11 +698,7 @@ async processFile(filename: string) {
 
 ```typescript
 // src/guards/rate-limit.guard.ts
-import { Injectable, CanActivate, ExecutionContext } from "@nestjs/common";
-import { Reflector } from "@nestjs/core";
-import { ThrottlerGuard, ThrottlerException } from "@nestjs/throttler";
 
-@Injectable()
 export class CustomThrottlerGuard extends ThrottlerGuard {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
@@ -736,7 +725,7 @@ export class CustomThrottlerGuard extends ThrottlerGuard {
 
 ### 2. **Use Strong Validation Libraries**
 
-- class-validator for DTOs
+- express-validator for DTOs
 - Joi for complex validation
 - validator.js for specific formats
 - Custom validators when needed
@@ -792,7 +781,7 @@ export class CustomThrottlerGuard extends ThrottlerGuard {
 ✅ **Whitelist allowed values instead of blacklisting bad ones**  
 ✅ **Validate file uploads by content, not just extension**  
 ✅ **Never execute user input as commands**  
-✅ **Use strong validation libraries like class-validator**  
+✅ **Use strong validation libraries like express-validator**  
 ✅ **Implement defense in depth with multiple validation layers**  
 ✅ **Keep error messages generic to avoid information leakage**  
 ✅ **Regular security audits and dependency updates**

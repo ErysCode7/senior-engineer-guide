@@ -2,706 +2,644 @@
 
 ## Overview
 
-Email and SMS are essential communication channels for user notifications, authentication, marketing, and transactional messages. This tutorial covers integration with SendGrid, Twilio, and best practices for templating and deliverability.
+Email and SMS are critical communication channels for modern applications. This guide covers integrating Nodemailer for transactional emails, Twilio for SMS, template engines, and building reliable notification systems with Express.
 
-## Practical Use Cases
+## Email with Nodemailer
 
-- **Transactional emails**: Order confirmations, receipts, password resets
-- **Marketing emails**: Newsletters, promotional campaigns
-- **SMS verification**: Two-factor authentication, OTP codes
-- **Notifications**: Real-time alerts via SMS
-- **Welcome sequences**: Onboarding email series
-
-## Service Comparison
-
-| Service      | Best For             | Pricing         | Features                     |
-| ------------ | -------------------- | --------------- | ---------------------------- |
-| **SendGrid** | Email at scale       | Pay as you go   | Templates, analytics, API    |
-| **AWS SES**  | Cost-effective email | Very cheap      | Reliable, scalable           |
-| **Twilio**   | SMS/Voice            | Pay per message | Global coverage, MMS         |
-| **Postmark** | Transactional email  | Simple pricing  | Fast delivery, great support |
-
-## Step-by-Step Implementation
-
-### 1. SendGrid Email Integration
+### 1. Setup
 
 ```bash
-npm install @sendgrid/mail handlebars
+npm install nodemailer
+npm install -D @types/nodemailer
 ```
 
 ```typescript
-// email/email.module.ts
-import { Module } from "@nestjs/common";
-import { ConfigModule } from "@nestjs/config";
-import { EmailService } from "./email.service";
-import { EmailController } from "./email.controller";
+// src/config/email.ts
+import nodemailer from 'nodemailer';
 
-@Module({
-  imports: [ConfigModule],
-  controllers: [EmailController],
-  providers: [EmailService],
-  exports: [EmailService],
-})
-export class EmailModule {}
+const createTransporter = () => {
+  if (process.env.NODE_ENV === 'production') {
+    // Production: Use real SMTP service (e.g., SendGrid, AWS SES)
+    return nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587'),
+      secure: process.env.SMTP_PORT === '465',
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASSWORD,
+      },
+    });
+  } else {
+    // Development: Use Ethereal (fake SMTP for testing)
+    return nodemailer.createTransport({
+      host: 'smtp.ethereal.email',
+      port: 587,
+      auth: {
+        user: process.env.ETHEREAL_USER,
+        pass: process.env.ETHEREAL_PASSWORD,
+      },
+    });
+  }
+};
 
-// email/email.service.ts
-import { Injectable, Logger } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import * as sgMail from "@sendgrid/mail";
-import * as handlebars from "handlebars";
-import * as fs from "fs";
-import * as path from "path";
+export const transporter = createTransporter();
 
-export interface EmailOptions {
-  to: string | string[];
+export default transporter;
+```
+
+```env
+# .env
+SMTP_HOST=smtp.sendgrid.net
+SMTP_PORT=587
+SMTP_USER=apikey
+SMTP_PASSWORD=your_sendgrid_api_key
+FROM_EMAIL=noreply@yourdomain.com
+FROM_NAME=Your App Name
+```
+
+### 2. Email Service
+
+```typescript
+// src/services/email.service.ts
+import transporter from '../config/email';
+import { AppError } from '../utils/AppError';
+
+interface EmailOptions {
+  to: string;
   subject: string;
-  template?: string;
-  context?: Record<string, any>;
-  html?: string;
   text?: string;
-  attachments?: Array<{
-    content: string;
-    filename: string;
-    type: string;
-  }>;
+  html?: string;
 }
 
-@Injectable()
 export class EmailService {
-  private readonly logger = new Logger(EmailService.name);
+  private fromEmail: string;
+  private fromName: string;
 
-  constructor(private configService: ConfigService) {
-    sgMail.setApiKey(this.configService.get("SENDGRID_API_KEY"));
+  constructor() {
+    this.fromEmail = process.env.FROM_EMAIL || 'noreply@example.com';
+    this.fromName = process.env.FROM_NAME || 'App';
   }
 
-  async sendEmail(options: EmailOptions): Promise<void> {
+  async sendEmail({ to, subject, text, html }: EmailOptions) {
     try {
-      const { to, subject, template, context, html, text, attachments } =
-        options;
+      const info = await transporter.sendMail({
+        from: `"${this.fromName}" <${this.fromEmail}>`,
+        to,
+        subject,
+        text,
+        html,
+      });
 
-      let emailHtml = html;
-      let emailText = text;
-
-      // If template provided, render it
-      if (template && context) {
-        emailHtml = await this.renderTemplate(template, context);
-        emailText = this.stripHtml(emailHtml);
+      console.log('Email sent:', info.messageId);
+      
+      if (process.env.NODE_ENV === 'development') {
+        console.log('Preview URL:', nodemailer.getTestMessageUrl(info));
       }
 
-      const msg: sgMail.MailDataRequired = {
-        to: Array.isArray(to) ? to : [to],
-        from: {
-          email: this.configService.get("EMAIL_FROM"),
-          name: this.configService.get("EMAIL_FROM_NAME", "MyApp"),
-        },
-        subject,
-        html: emailHtml,
-        text: emailText,
-        attachments,
-      };
-
-      await sgMail.send(msg);
-      this.logger.log(`Email sent to ${to}`);
+      return info;
     } catch (error) {
-      this.logger.error(`Failed to send email: ${error.message}`, error.stack);
-      throw error;
+      console.error('Email sending failed:', error);
+      throw new AppError('Failed to send email', 500);
     }
   }
 
-  async sendWelcomeEmail(email: string, name: string): Promise<void> {
-    return this.sendEmail({
-      to: email,
-      subject: "Welcome to MyApp!",
-      template: "welcome",
-      context: {
-        name,
-        appName: "MyApp",
-        loginUrl: `${this.configService.get("FRONTEND_URL")}/login`,
-      },
-    });
+  async sendWelcomeEmail(email: string, name: string) {
+    const subject = `Welcome to ${this.fromName}!`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h1 style="color: #333;">Welcome, ${name}!</h1>
+        <p>Thanks for signing up. We're excited to have you on board.</p>
+        <p>Get started by exploring our features:</p>
+        <a href="${process.env.APP_URL}/dashboard" style="
+          display: inline-block;
+          padding: 12px 24px;
+          background-color: #007bff;
+          color: #fff;
+          text-decoration: none;
+          border-radius: 4px;
+        ">Go to Dashboard</a>
+        <p style="margin-top: 20px; color: #666;">
+          If you have any questions, feel free to reply to this email.
+        </p>
+      </div>
+    `;
+
+    return this.sendEmail({ to: email, subject, html });
   }
 
-  async sendPasswordResetEmail(
-    email: string,
-    resetToken: string
-  ): Promise<void> {
-    const resetUrl = `${this.configService.get(
-      "FRONTEND_URL"
-    )}/reset-password?token=${resetToken}`;
+  async sendPasswordResetEmail(email: string, token: string) {
+    const resetUrl = `${process.env.APP_URL}/reset-password?token=${token}`;
+    const subject = 'Password Reset Request';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h1 style="color: #333;">Password Reset</h1>
+        <p>You requested to reset your password. Click the button below:</p>
+        <a href="${resetUrl}" style="
+          display: inline-block;
+          padding: 12px 24px;
+          background-color: #dc3545;
+          color: #fff;
+          text-decoration: none;
+          border-radius: 4px;
+        ">Reset Password</a>
+        <p style="margin-top: 20px; color: #666;">
+          This link expires in 1 hour.
+        </p>
+        <p style="color: #666;">
+          If you didn't request this, please ignore this email.
+        </p>
+      </div>
+    `;
 
-    return this.sendEmail({
-      to: email,
-      subject: "Reset Your Password",
-      template: "password-reset",
-      context: {
-        resetUrl,
-        expiresIn: "1 hour",
-      },
-    });
+    return this.sendEmail({ to: email, subject, html });
   }
 
-  async sendVerificationEmail(
-    email: string,
-    verificationToken: string
-  ): Promise<void> {
-    const verificationUrl = `${this.configService.get(
-      "FRONTEND_URL"
-    )}/verify-email?token=${verificationToken}`;
+  async sendVerificationEmail(email: string, token: string) {
+    const verifyUrl = `${process.env.APP_URL}/verify-email?token=${token}`;
+    const subject = 'Verify Your Email';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h1 style="color: #333;">Email Verification</h1>
+        <p>Please verify your email address by clicking the button below:</p>
+        <a href="${verifyUrl}" style="
+          display: inline-block;
+          padding: 12px 24px;
+          background-color: #28a745;
+          color: #fff;
+          text-decoration: none;
+          border-radius: 4px;
+        ">Verify Email</a>
+        <p style="margin-top: 20px; color: #666;">
+          This link expires in 24 hours.
+        </p>
+      </div>
+    `;
 
-    return this.sendEmail({
-      to: email,
-      subject: "Verify Your Email",
-      template: "email-verification",
-      context: {
-        verificationUrl,
-      },
-    });
+    return this.sendEmail({ to: email, subject, html });
   }
 
-  async sendOrderConfirmation(email: string, orderDetails: any): Promise<void> {
-    return this.sendEmail({
-      to: email,
-      subject: `Order Confirmation #${orderDetails.orderNumber}`,
-      template: "order-confirmation",
-      context: {
-        orderNumber: orderDetails.orderNumber,
-        items: orderDetails.items,
-        total: orderDetails.total,
-        shippingAddress: orderDetails.shippingAddress,
-        trackingUrl: orderDetails.trackingUrl,
-      },
-    });
-  }
+  async sendOrderConfirmation(email: string, orderDetails: any) {
+    const subject = `Order Confirmation #${orderDetails.id}`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h1 style="color: #333;">Order Confirmed!</h1>
+        <p>Thank you for your order. Here are the details:</p>
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 4px;">
+          <p><strong>Order #:</strong> ${orderDetails.id}</p>
+          <p><strong>Total:</strong> $${orderDetails.total}</p>
+          <p><strong>Status:</strong> ${orderDetails.status}</p>
+        </div>
+        <a href="${process.env.APP_URL}/orders/${orderDetails.id}" style="
+          display: inline-block;
+          margin-top: 20px;
+          padding: 12px 24px;
+          background-color: #007bff;
+          color: #fff;
+          text-decoration: none;
+          border-radius: 4px;
+        ">View Order</a>
+      </div>
+    `;
 
-  async sendBulkEmails(
-    recipients: Array<{ email: string; context: Record<string, any> }>,
-    subject: string,
-    template: string
-  ): Promise<void> {
-    const messages = await Promise.all(
-      recipients.map(async ({ email, context }) => ({
-        to: email,
-        from: {
-          email: this.configService.get("EMAIL_FROM"),
-          name: this.configService.get("EMAIL_FROM_NAME"),
-        },
-        subject,
-        html: await this.renderTemplate(template, context),
-      }))
-    );
-
-    try {
-      await sgMail.send(messages);
-      this.logger.log(`Bulk email sent to ${recipients.length} recipients`);
-    } catch (error) {
-      this.logger.error("Failed to send bulk email", error.stack);
-      throw error;
-    }
-  }
-
-  private async renderTemplate(
-    templateName: string,
-    context: Record<string, any>
-  ): Promise<string> {
-    const templatePath = path.join(
-      process.cwd(),
-      "src/email/templates",
-      `${templateName}.hbs`
-    );
-
-    const templateContent = fs.readFileSync(templatePath, "utf-8");
-    const template = handlebars.compile(templateContent);
-
-    return template(context);
-  }
-
-  private stripHtml(html: string): string {
-    return html.replace(/<[^>]*>?/gm, "");
+    return this.sendEmail({ to: email, subject, html });
   }
 }
+
+export default new EmailService();
 ```
 
-### 2. Email Templates (Handlebars)
+## SMS with Twilio
 
-```html
-<!-- src/email/templates/welcome.hbs -->
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        line-height: 1.6;
-        color: #333;
-        max-width: 600px;
-        margin: 0 auto;
-        padding: 20px;
-      }
-      .header {
-        background-color: #4f46e5;
-        color: white;
-        padding: 20px;
-        text-align: center;
-        border-radius: 8px 8px 0 0;
-      }
-      .content {
-        background-color: #f9fafb;
-        padding: 30px;
-        border-radius: 0 0 8px 8px;
-      }
-      .button {
-        display: inline-block;
-        padding: 12px 24px;
-        background-color: #4f46e5;
-        color: white;
-        text-decoration: none;
-        border-radius: 6px;
-        margin: 20px 0;
-      }
-      .footer {
-        text-align: center;
-        margin-top: 30px;
-        color: #6b7280;
-        font-size: 14px;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="header">
-      <h1>Welcome to {{appName}}!</h1>
-    </div>
-    <div class="content">
-      <p>Hi {{name}},</p>
-      <p>
-        We're excited to have you on board! You can now access all the features
-        of {{appName}}.
-      </p>
-      <p>
-        <a href="{{loginUrl}}" class="button">Get Started</a>
-      </p>
-      <p>If you have any questions, feel free to reply to this email.</p>
-      <p>Best regards,<br />The {{appName}} Team</p>
-    </div>
-    <div class="footer">
-      <p>You received this email because you signed up for {{appName}}.</p>
-    </div>
-  </body>
-</html>
-
-<!-- src/email/templates/password-reset.hbs -->
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
-    <style>
-      /* Same styles as above */
-    </style>
-  </head>
-  <body>
-    <div class="header">
-      <h1>Reset Your Password</h1>
-    </div>
-    <div class="content">
-      <p>Hi there,</p>
-      <p>
-        We received a request to reset your password. Click the button below to
-        create a new password:
-      </p>
-      <p>
-        <a href="{{resetUrl}}" class="button">Reset Password</a>
-      </p>
-      <p>This link will expire in {{expiresIn}}.</p>
-      <p>If you didn't request this, you can safely ignore this email.</p>
-    </div>
-    <div class="footer">
-      <p>For security reasons, this link will only work once.</p>
-    </div>
-  </body>
-</html>
-```
-
-### 3. Twilio SMS Integration
+### 1. Setup
 
 ```bash
 npm install twilio
 ```
 
 ```typescript
-// sms/sms.module.ts
-import { Module } from "@nestjs/common";
-import { ConfigModule } from "@nestjs/config";
-import { SmsService } from "./sms.service";
+// src/config/twilio.ts
+import twilio from 'twilio';
 
-@Module({
-  imports: [ConfigModule],
-  providers: [SmsService],
-  exports: [SmsService],
-})
-export class SmsModule {}
+if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+  throw new Error('Twilio credentials are required');
+}
 
-// sms/sms.service.ts
-import { Injectable, Logger } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import * as Twilio from "twilio";
+export const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
-@Injectable()
-export class SmsService {
-  private readonly logger = new Logger(SmsService.name);
-  private twilioClient: Twilio.Twilio;
+export default twilioClient;
+```
+
+```env
+# .env
+TWILIO_ACCOUNT_SID=your_account_sid
+TWILIO_AUTH_TOKEN=your_auth_token
+TWILIO_PHONE_NUMBER=+1234567890
+```
+
+### 2. SMS Service
+
+```typescript
+// src/services/sms.service.ts
+import twilioClient from '../config/twilio';
+import { AppError } from '../utils/AppError';
+
+export class SMSService {
   private fromNumber: string;
 
-  constructor(private configService: ConfigService) {
-    this.twilioClient = Twilio(
-      this.configService.get("TWILIO_ACCOUNT_SID"),
-      this.configService.get("TWILIO_AUTH_TOKEN")
-    );
-    this.fromNumber = this.configService.get("TWILIO_PHONE_NUMBER");
+  constructor() {
+    this.fromNumber = process.env.TWILIO_PHONE_NUMBER || '';
   }
 
-  async sendSms(to: string, message: string): Promise<void> {
+  async sendSMS(to: string, message: string) {
     try {
-      const result = await this.twilioClient.messages.create({
+      const result = await twilioClient.messages.create({
         body: message,
         from: this.fromNumber,
         to,
       });
 
-      this.logger.log(`SMS sent to ${to}: ${result.sid}`);
+      console.log('SMS sent:', result.sid);
+      return result;
     } catch (error) {
-      this.logger.error(`Failed to send SMS: ${error.message}`, error.stack);
-      throw error;
+      console.error('SMS sending failed:', error);
+      throw new AppError('Failed to send SMS', 500);
     }
   }
 
-  async sendVerificationCode(phoneNumber: string, code: string): Promise<void> {
-    const message = `Your verification code is: ${code}. Valid for 10 minutes.`;
-    return this.sendSms(phoneNumber, message);
+  async sendVerificationCode(phoneNumber: string, code: string) {
+    const message = `Your verification code is: ${code}. It expires in 10 minutes.`;
+    return this.sendSMS(phoneNumber, message);
   }
 
-  async sendOTP(phoneNumber: string): Promise<string> {
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-    await this.sendVerificationCode(phoneNumber, otp);
-
-    return otp; // Store this in cache/database with expiration
+  async sendOrderNotification(phoneNumber: string, orderId: string) {
+    const message = `Your order #${orderId} has been confirmed. Track it at ${process.env.APP_URL}/orders/${orderId}`;
+    return this.sendSMS(phoneNumber, message);
   }
 
-  async sendNotification(
-    phoneNumber: string,
-    notification: string
-  ): Promise<void> {
-    return this.sendSms(phoneNumber, notification);
-  }
-
-  async sendBulkSms(
-    recipients: Array<{ phoneNumber: string; message: string }>
-  ): Promise<void> {
-    const promises = recipients.map(({ phoneNumber, message }) =>
-      this.sendSms(phoneNumber, message).catch((error) => {
-        this.logger.error(`Failed to send SMS to ${phoneNumber}`, error);
-        return null;
-      })
-    );
-
-    await Promise.allSettled(promises);
-  }
-
-  // Using Twilio Verify API (better for OTP)
-  async sendVerifyOTP(phoneNumber: string): Promise<void> {
-    try {
-      await this.twilioClient.verify.v2
-        .services(this.configService.get("TWILIO_VERIFY_SERVICE_SID"))
-        .verifications.create({
-          to: phoneNumber,
-          channel: "sms",
-        });
-
-      this.logger.log(`Verification OTP sent to ${phoneNumber}`);
-    } catch (error) {
-      this.logger.error("Failed to send verification OTP", error.stack);
-      throw error;
-    }
-  }
-
-  async verifyOTP(phoneNumber: string, code: string): Promise<boolean> {
-    try {
-      const verification = await this.twilioClient.verify.v2
-        .services(this.configService.get("TWILIO_VERIFY_SERVICE_SID"))
-        .verificationChecks.create({
-          to: phoneNumber,
-          code,
-        });
-
-      return verification.status === "approved";
-    } catch (error) {
-      this.logger.error("Failed to verify OTP", error.stack);
-      return false;
-    }
+  async sendSecurityAlert(phoneNumber: string, alertType: string) {
+    const message = `Security Alert: ${alertType} detected on your account. If this wasn't you, secure your account immediately.`;
+    return this.sendSMS(phoneNumber, message);
   }
 }
+
+export default new SMSService();
 ```
 
-### 4. Notification Service (Unified)
+## Notification Service (Unified)
 
 ```typescript
-// notifications/notifications.service.ts
-import { Injectable } from "@nestjs/common";
-import { EmailService } from "../email/email.service";
-import { SmsService } from "../sms/sms.service";
+// src/services/notification.service.ts
+import emailService from './email.service';
+import smsService from './sms.service';
+import { prisma } from '../config/database';
 
-export interface NotificationOptions {
+type NotificationChannel = 'email' | 'sms' | 'both';
+
+interface NotificationOptions {
   userId: string;
-  type: "email" | "sms" | "both";
-  channel: "transactional" | "marketing";
-  template?: string;
-  context?: Record<string, any>;
+  channel: NotificationChannel;
+  type: string;
+  data: any;
 }
 
-@Injectable()
-export class NotificationsService {
-  constructor(
-    private emailService: EmailService,
-    private smsService: SmsService
-  ) {}
+export class NotificationService {
+  async sendNotification({ userId, channel, type, data }: NotificationOptions) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
 
-  async sendNotification(
-    recipient: { email?: string; phone?: string },
-    message: { subject?: string; body: string },
-    options: NotificationOptions
-  ): Promise<void> {
-    const promises: Promise<void>[] = [];
-
-    if (
-      (options.type === "email" || options.type === "both") &&
-      recipient.email
-    ) {
-      promises.push(
-        this.emailService.sendEmail({
-          to: recipient.email,
-          subject: message.subject || "Notification",
-          html: message.body,
-        })
-      );
+    if (!user) {
+      throw new Error('User not found');
     }
 
-    if (
-      (options.type === "sms" || options.type === "both") &&
-      recipient.phone
-    ) {
-      promises.push(this.smsService.sendSms(recipient.phone, message.body));
+    const promises: Promise<any>[] = [];
+
+    if (channel === 'email' || channel === 'both') {
+      promises.push(this.sendEmailNotification(user.email, type, data));
+    }
+
+    if (channel === 'sms' || channel === 'both') {
+      if (user.phoneNumber) {
+        promises.push(this.sendSMSNotification(user.phoneNumber, type, data));
+      }
     }
 
     await Promise.allSettled(promises);
-  }
 
-  async sendWelcome(email: string, name: string): Promise<void> {
-    return this.emailService.sendWelcomeEmail(email, name);
-  }
-
-  async sendPasswordReset(email: string, token: string): Promise<void> {
-    return this.emailService.sendPasswordResetEmail(email, token);
-  }
-
-  async send2FACode(phoneNumber: string): Promise<string> {
-    return this.smsService.sendOTP(phoneNumber);
-  }
-
-  async verify2FACode(phoneNumber: string, code: string): Promise<boolean> {
-    return this.smsService.verifyOTP(phoneNumber, code);
-  }
-}
-```
-
-### 5. Queue for Reliable Delivery
-
-```bash
-npm install @nestjs/bull bull
-npm install -D @types/bull
-```
-
-```typescript
-// email/email-queue.processor.ts
-import { Process, Processor } from "@nestjs/bull";
-import { Logger } from "@nestjs/common";
-import { Job } from "bull";
-import { EmailService, EmailOptions } from "./email.service";
-
-@Processor("email")
-export class EmailQueueProcessor {
-  private readonly logger = new Logger(EmailQueueProcessor.name);
-
-  constructor(private emailService: EmailService) {}
-
-  @Process("send-email")
-  async handleSendEmail(job: Job<EmailOptions>) {
-    this.logger.log(`Processing email job ${job.id}`);
-
-    try {
-      await this.emailService.sendEmail(job.data);
-      this.logger.log(`Email job ${job.id} completed`);
-    } catch (error) {
-      this.logger.error(`Email job ${job.id} failed`, error.stack);
-      throw error; // Will trigger retry
-    }
-  }
-
-  @Process("send-bulk-email")
-  async handleBulkEmail(job: Job) {
-    this.logger.log(`Processing bulk email job ${job.id}`);
-
-    const { recipients, subject, template } = job.data;
-
-    try {
-      await this.emailService.sendBulkEmails(recipients, subject, template);
-      this.logger.log(`Bulk email job ${job.id} completed`);
-    } catch (error) {
-      this.logger.error(`Bulk email job ${job.id} failed`, error.stack);
-      throw error;
-    }
-  }
-}
-
-// email/email-queue.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectQueue } from "@nestjs/bull";
-import { Queue } from "bull";
-import { EmailOptions } from "./email.service";
-
-@Injectable()
-export class EmailQueueService {
-  constructor(@InjectQueue("email") private emailQueue: Queue) {}
-
-  async queueEmail(options: EmailOptions): Promise<void> {
-    await this.emailQueue.add("send-email", options, {
-      attempts: 3,
-      backoff: {
-        type: "exponential",
-        delay: 2000,
+    // Log notification
+    await prisma.notification.create({
+      data: {
+        userId,
+        type,
+        channel,
+        status: 'sent',
       },
     });
   }
 
-  async queueBulkEmail(
-    recipients: any[],
-    subject: string,
-    template: string
-  ): Promise<void> {
-    await this.emailQueue.add(
-      "send-bulk-email",
-      { recipients, subject, template },
-      {
-        attempts: 3,
-        backoff: {
-          type: "exponential",
-          delay: 5000,
-        },
-      }
-    );
+  private async sendEmailNotification(email: string, type: string, data: any) {
+    switch (type) {
+      case 'welcome':
+        return emailService.sendWelcomeEmail(email, data.name);
+      case 'password_reset':
+        return emailService.sendPasswordResetEmail(email, data.token);
+      case 'email_verification':
+        return emailService.sendVerificationEmail(email, data.token);
+      case 'order_confirmation':
+        return emailService.sendOrderConfirmation(email, data.order);
+      default:
+        throw new Error(`Unknown email notification type: ${type}`);
+    }
   }
+
+  private async sendSMSNotification(phoneNumber: string, type: string, data: any) {
+    switch (type) {
+      case 'verification_code':
+        return smsService.sendVerificationCode(phoneNumber, data.code);
+      case 'order_notification':
+        return smsService.sendOrderNotification(phoneNumber, data.orderId);
+      case 'security_alert':
+        return smsService.sendSecurityAlert(phoneNumber, data.alertType);
+      default:
+        throw new Error(`Unknown SMS notification type: ${type}`);
+    }
+  }
+
+  async getUserNotificationPreferences(userId: string) {
+    return prisma.notificationPreference.findUnique({
+      where: { userId },
+    });
+  }
+
+  async updateNotificationPreferences(userId: string, preferences: any) {
+    return prisma.notificationPreference.upsert({
+      where: { userId },
+      update: preferences,
+      create: { userId, ...preferences },
+    });
+  }
+}
+
+export default new NotificationService();
+```
+
+## Email Templates with Handlebars
+
+```bash
+npm install handlebars
+npm install -D @types/handlebars
+```
+
+```typescript
+// src/services/template.service.ts
+import Handlebars from 'handlebars';
+import fs from 'fs/promises';
+import path from 'path';
+
+export class TemplateService {
+  private templatesDir = path.join(__dirname, '../templates/emails');
+  private cache = new Map<string, HandlebarsTemplateDelegate>();
+
+  async renderTemplate(templateName: string, data: any): Promise<string> {
+    let template = this.cache.get(templateName);
+
+    if (!template) {
+      const templatePath = path.join(this.templatesDir, `${templateName}.hbs`);
+      const templateContent = await fs.readFile(templatePath, 'utf-8');
+      template = Handlebars.compile(templateContent);
+      this.cache.set(templateName, template);
+    }
+
+    return template(data);
+  }
+}
+
+export default new TemplateService();
+```
+
+```handlebars
+{{!-- src/templates/emails/welcome.hbs --}}
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    .container { max-width: 600px; margin: 0 auto; }
+    .button { 
+      display: inline-block; 
+      padding: 12px 24px; 
+      background-color: #007bff; 
+      color: #fff; 
+      text-decoration: none; 
+      border-radius: 4px; 
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Welcome, {{name}}!</h1>
+    <p>Thanks for signing up for {{appName}}.</p>
+    <a href="{{dashboardUrl}}" class="button">Get Started</a>
+  </div>
+</body>
+</html>
+```
+
+```typescript
+// Updated EmailService to use templates
+async sendWelcomeEmail(email: string, name: string) {
+  const html = await templateService.renderTemplate('welcome', {
+    name,
+    appName: this.fromName,
+    dashboardUrl: `${process.env.APP_URL}/dashboard`,
+  });
+
+  return this.sendEmail({
+    to: email,
+    subject: `Welcome to ${this.fromName}!`,
+    html,
+  });
 }
 ```
 
-### 6. Rate Limiting for SMS
+## Background Email Queue (Bull)
 
 ```typescript
-// sms/sms-rate-limiter.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectRedis } from "@nestjs-modules/ioredis";
-import { Redis } from "ioredis";
+// src/queues/email.queue.ts
+import Queue from 'bull';
+import emailService from '../services/email.service';
 
-@Injectable()
-export class SmsRateLimiterService {
-  constructor(@InjectRedis() private redis: Redis) {}
+export const emailQueue = new Queue('email', {
+  redis: {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379'),
+  },
+});
 
-  async canSendSms(phoneNumber: string): Promise<boolean> {
-    const key = `sms:ratelimit:${phoneNumber}`;
-    const count = await this.redis.get(key);
+emailQueue.process(async (job) => {
+  const { to, subject, html } = job.data;
+  await emailService.sendEmail({ to, subject, html });
+});
 
-    if (count && parseInt(count) >= 3) {
-      return false; // Max 3 SMS per hour
-    }
+export const queueEmail = async (to: string, subject: string, html: string) => {
+  await emailQueue.add({ to, subject, html }, {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 2000,
+    },
+  });
+};
+```
 
-    return true;
-  }
+## Controller
 
-  async incrementSmsCount(phoneNumber: string): Promise<void> {
-    const key = `sms:ratelimit:${phoneNumber}`;
-    const current = await this.redis.incr(key);
+```typescript
+// src/controllers/notification.controller.ts
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import notificationService from '../services/notification.service';
 
-    if (current === 1) {
-      await this.redis.expire(key, 3600); // 1 hour
-    }
-  }
+export class NotificationController {
+  sendNotification = asyncHandler(async (req: Request, res: Response) => {
+    const { userId, channel, type, data } = req.body;
+
+    await notificationService.sendNotification({ userId, channel, type, data });
+
+    res.json({
+      success: true,
+      message: 'Notification sent',
+    });
+  });
+
+  getPreferences = asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+
+    const preferences = await notificationService.getUserNotificationPreferences(userId);
+
+    res.json({
+      success: true,
+      data: preferences,
+    });
+  });
+
+  updatePreferences = asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+    const preferences = req.body;
+
+    const updated = await notificationService.updateNotificationPreferences(
+      userId,
+      preferences
+    );
+
+    res.json({
+      success: true,
+      data: updated,
+    });
+  });
 }
+
+export default new NotificationController();
+```
+
+## Routes
+
+```typescript
+// src/routes/notification.routes.ts
+import { Router } from 'express';
+import notificationController from '../controllers/notification.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+router.use(authenticate);
+
+router.post('/send', notificationController.sendNotification);
+router.get('/preferences', notificationController.getPreferences);
+router.patch('/preferences', notificationController.updatePreferences);
+
+export default router;
+```
+
+## Testing
+
+```typescript
+// src/__tests__/notification.test.ts
+import request from 'supertest';
+import app from '../server';
+
+describe('Notification System', () => {
+  let authToken: string;
+
+  beforeAll(async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'test@example.com', password: 'password123' });
+    authToken = res.body.data.accessToken;
+  });
+
+  describe('Email Service', () => {
+    it('should send a welcome email', async () => {
+      const result = await emailService.sendWelcomeEmail(
+        'test@example.com',
+        'Test User'
+      );
+
+      expect(result.messageId).toBeDefined();
+    });
+  });
+
+  describe('SMS Service', () => {
+    it('should send a verification code', async () => {
+      const result = await smsService.sendVerificationCode(
+        '+1234567890',
+        '123456'
+      );
+
+      expect(result.sid).toBeDefined();
+    });
+  });
+
+  describe('POST /api/v1/notifications/preferences', () => {
+    it('should update notification preferences', async () => {
+      const res = await request(app)
+        .patch('/api/v1/notifications/preferences')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({
+          emailNotifications: true,
+          smsNotifications: false,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.emailNotifications).toBe(true);
+    });
+  });
+});
 ```
 
 ## Best Practices
 
-### 1. Deliverability
-
-```typescript
-// Use proper SPF, DKIM, DMARC records
-// Warm up IP addresses gradually
-// Monitor bounce rates and complaints
-// Use double opt-in for marketing emails
-// Implement unsubscribe links
-```
-
-### 2. Template Management
-
-```typescript
-// Store templates in database or file system
-// Version templates
-// Preview before sending
-// Test with different data
-// Use consistent branding
-```
-
-### 3. Error Handling
-
-```typescript
-try {
-  await emailService.sendEmail(options);
-} catch (error) {
-  if (error.code === 403) {
-    // Rate limit exceeded
-    await queueForLater(options);
-  } else if (error.code === 550) {
-    // Invalid recipient
-    await markAsInvalid(recipient);
-  } else {
-    // Retry
-    throw error;
-  }
-}
-```
-
-### 4. Testing
-
-```typescript
-// Use test mode APIs
-const testRecipient = process.env.TEST_EMAIL;
-
-// Mock in tests
-const mockEmailService = {
-  sendEmail: jest.fn().mockResolvedValue(undefined),
-};
-
-// Capture emails in development
-// Use services like Mailtrap or MailHog
-```
+1. **Use transactional email services** (SendGrid, AWS SES, Mailgun)
+2. **Queue emails** for better performance
+3. **Implement retry logic** for failed deliveries
+4. **Track delivery status** via webhooks
+5. **Use templates** for consistent branding
+6. **Test with Ethereal** in development
+7. **Validate phone numbers** before sending SMS
+8. **Respect user preferences** for notifications
+9. **Monitor delivery rates** and bounce rates
+10. **Comply with CAN-SPAM** and GDPR regulations
 
 ## Key Takeaways
 
-1. **Queue emails** - Don't block requests
-2. **Handle failures** - Implement retries
-3. **Rate limit SMS** - Prevent abuse
-4. **Use templates** - Maintain consistency
-5. **Monitor deliverability** - Track bounces
-6. **Test thoroughly** - Use test modes
-7. **Comply with laws** - CAN-SPAM, GDPR
-8. **Unsubscribe** - Always provide option
+1. **Nodemailer** handles email delivery
+2. **Twilio** powers SMS functionality
+3. **Templates** ensure consistent messaging
+4. **Queues** improve performance
+5. **Retry logic** handles failures gracefully
+6. **User preferences** enable opt-out
+7. **Unified service** simplifies multi-channel notifications
+8. **Testing tools** streamline development
 
-Reliable email and SMS delivery requires proper infrastructure, monitoring, and compliance with regulations!
+Reliable notifications build user trust and improve engagement.

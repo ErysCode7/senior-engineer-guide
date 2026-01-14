@@ -2,7 +2,7 @@
 
 ## Overview
 
-Authentication verifies user identity. This tutorial covers three main approaches: JWT (JSON Web Tokens) for stateless authentication, OAuth for third-party authentication, and session-based authentication for traditional server-side sessions.
+Authentication verifies user identity. This tutorial covers three main approaches with Express: JWT (JSON Web Tokens) for stateless authentication, OAuth for third-party authentication, and session-based authentication using express-session.
 
 ## Authentication Strategies Comparison
 
@@ -14,59 +14,53 @@ Authentication verifies user identity. This tutorial covers three main approache
 | **Logout**      | Token expiration only           | Token revocation         | Server-side destroy      |
 | **Use Case**    | APIs, SPAs                      | Third-party login        | Traditional web apps     |
 
-## Step-by-Step Implementation
+## JWT Authentication with Express & Passport
 
-### 1. JWT Authentication with NestJS
+### 1. Setup
 
-```bash
-npm install @nestjs/jwt @nestjs/passport passport passport-jwt bcrypt
-npm install -D @types/passport-jwt @types/bcrypt
-```
+\`\`\`bash
+npm install passport passport-jwt jsonwebtoken bcrypt
+npm install -D @types/passport @types/passport-jwt @types/jsonwebtoken
+\`\`\`
 
-```typescript
-// auth/auth.module.ts
-import { Module } from "@nestjs/common";
-import { JwtModule } from "@nestjs/jwt";
-import { PassportModule } from "@nestjs/passport";
-import { ConfigModule, ConfigService } from "@nestjs/config";
-import { AuthService } from "./auth.service";
-import { AuthController } from "./auth.controller";
-import { JwtStrategy } from "./strategies/jwt.strategy";
-import { LocalStrategy } from "./strategies/local.strategy";
-import { UsersModule } from "../users/users.module";
+\`\`\`typescript
+// src/config/passport.ts
+import { Strategy as JwtStrategy, ExtractJwt, StrategyOptions } from 'passport-jwt';
+import passport from 'passport';
+import userService from '../services/user.service';
 
-@Module({
-  imports: [
-    UsersModule,
-    PassportModule,
-    JwtModule.registerAsync({
-      imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>("JWT_SECRET"),
-        signOptions: {
-          expiresIn: configService.get<string>("JWT_EXPIRES_IN", "15m"),
-        },
-      }),
-      inject: [ConfigService],
-    }),
-  ],
-  controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, LocalStrategy],
-  exports: [AuthService],
-})
-export class AuthModule {}
+const jwtOptions: StrategyOptions = {
+  jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+  secretOrKey: process.env.JWT_SECRET || 'your-secret-key',
+};
 
-// auth/auth.service.ts
-import { Injectable, UnauthorizedException } from "@nestjs/common";
-import { JwtService } from "@nestjs/jwt";
-import { ConfigService } from "@nestjs/config";
-import * as bcrypt from "bcrypt";
-import { UsersService } from "../users/users.service";
-import { LoginDto } from "./dto/login.dto";
-import { RegisterDto } from "./dto/register.dto";
+passport.use(
+  new JwtStrategy(jwtOptions, async (payload, done) => {
+    try {
+      const user = await userService.findById(payload.sub);
+      if (user) {
+        return done(null, user);
+      }
+      return done(null, false);
+    } catch (error) {
+      return done(error, false);
+    }
+  })
+);
+
+export default passport;
+\`\`\`
+
+\`\`\`typescript
+// src/services/auth.service.ts
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import { v4 as uuid } from 'uuid';
+import userService from './user.service';
+import { AppError } from '../utils/AppError';
 
 export interface JwtPayload {
-  sub: string; // user id
+  sub: string;
   email: string;
   roles: string[];
 }
@@ -76,42 +70,43 @@ export interface AuthTokens {
   refreshToken: string;
 }
 
-@Injectable()
 export class AuthService {
-  constructor(
-    private readonly usersService: UsersService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService
-  ) {}
+  private readonly JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+  private readonly JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'refresh-secret';
+  private readonly ACCESS_TOKEN_EXPIRY = '15m';
+  private readonly REFRESH_TOKEN_EXPIRY = '7d';
 
-  async validateUser(email: string, password: string) {
-    const user = await this.usersService.findByEmail(email);
+  async register(email: string, password: string, firstName: string, lastName: string) {
+    const existingUser = await userService.findByEmail(email);
+    if (existingUser) {
+      throw new AppError('Email already exists', 409);
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = await userService.create({
+      email,
+      password: hashedPassword,
+      firstName,
+      lastName,
+      roles: ['user'],
+    });
+
+    return this.generateTokens(user);
+  }
+
+  async login(email: string, password: string): Promise<AuthTokens> {
+    const user = await userService.findByEmail(email);
 
     if (!user) {
-      throw new UnauthorizedException("Invalid credentials");
+      throw new AppError('Invalid credentials', 401);
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
     if (!isPasswordValid) {
-      throw new UnauthorizedException("Invalid credentials");
+      throw new AppError('Invalid credentials', 401);
     }
-
-    return user;
-  }
-
-  async login(loginDto: LoginDto): Promise<AuthTokens> {
-    const user = await this.validateUser(loginDto.email, loginDto.password);
-    return this.generateTokens(user);
-  }
-
-  async register(registerDto: RegisterDto) {
-    const hashedPassword = await bcrypt.hash(registerDto.password, 10);
-
-    const user = await this.usersService.create({
-      ...registerDto,
-      password: hashedPassword,
-    });
 
     return this.generateTokens(user);
   }
@@ -123,604 +118,547 @@ export class AuthService {
       roles: user.roles || [],
     };
 
-    const accessToken = this.jwtService.sign(payload);
-
-    const refreshToken = this.jwtService.sign(payload, {
-      secret: this.configService.get("JWT_REFRESH_SECRET"),
-      expiresIn: "7d",
+    const accessToken = jwt.sign(payload, this.JWT_SECRET, {
+      expiresIn: this.ACCESS_TOKEN_EXPIRY,
     });
 
-    // Store refresh token in database
-    await this.usersService.updateRefreshToken(user.id, refreshToken);
+    const refreshToken = jwt.sign(payload, this.JWT_REFRESH_SECRET, {
+      expiresIn: this.REFRESH_TOKEN_EXPIRY,
+    });
 
-    return {
-      accessToken,
-      refreshToken,
-    };
+    // Store refresh token
+    await userService.updateRefreshToken(user.id, refreshToken);
+
+    return { accessToken, refreshToken };
   }
 
   async refreshTokens(refreshToken: string): Promise<AuthTokens> {
     try {
-      const payload = this.jwtService.verify(refreshToken, {
-        secret: this.configService.get("JWT_REFRESH_SECRET"),
-      });
+      const payload = jwt.verify(refreshToken, this.JWT_REFRESH_SECRET) as JwtPayload;
 
-      const user = await this.usersService.findOne(payload.sub);
+      const user = await userService.findById(payload.sub);
 
-      // Verify refresh token matches stored token
-      const isValid = await bcrypt.compare(refreshToken, user.refreshToken);
-
-      if (!isValid) {
-        throw new UnauthorizedException("Invalid refresh token");
+      if (!user || user.refreshToken !== refreshToken) {
+        throw new AppError('Invalid refresh token', 401);
       }
 
       return this.generateTokens(user);
     } catch (error) {
-      throw new UnauthorizedException("Invalid refresh token");
+      throw new AppError('Invalid refresh token', 401);
     }
   }
 
-  async logout(userId: string): Promise<void> {
-    await this.usersService.updateRefreshToken(userId, null);
+  async logout(userId: string) {
+    await userService.updateRefreshToken(userId, null);
   }
 }
 
-// auth/strategies/jwt.strategy.ts
-import { Injectable, UnauthorizedException } from "@nestjs/common";
-import { PassportStrategy } from "@nestjs/passport";
-import { ExtractJwt, Strategy } from "passport-jwt";
-import { ConfigService } from "@nestjs/config";
-import { UsersService } from "../../users/users.service";
-import { JwtPayload } from "../auth.service";
+export default new AuthService();
+\`\`\`
 
-@Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy, "jwt") {
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly usersService: UsersService
-  ) {
-    super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      secretOrKey: configService.get("JWT_SECRET"),
-      ignoreExpiration: false,
-    });
-  }
+\`\`\`typescript
+// src/controllers/auth.controller.ts
+import { Request, Response } from 'express';
+import authService from '../services/auth.service';
+import { asyncHandler } from '../utils/asyncHandler';
 
-  async validate(payload: JwtPayload) {
-    const user = await this.usersService.findOne(payload.sub);
-
-    if (!user || !user.isActive) {
-      throw new UnauthorizedException();
-    }
-
-    return user; // Attached to request.user
-  }
-}
-
-// auth/strategies/local.strategy.ts
-import { Injectable } from "@nestjs/common";
-import { PassportStrategy } from "@nestjs/passport";
-import { Strategy } from "passport-local";
-import { AuthService } from "../auth.service";
-
-@Injectable()
-export class LocalStrategy extends PassportStrategy(Strategy, "local") {
-  constructor(private authService: AuthService) {
-    super({
-      usernameField: "email",
-    });
-  }
-
-  async validate(email: string, password: string) {
-    return this.authService.validateUser(email, password);
-  }
-}
-
-// auth/guards/jwt-auth.guard.ts
-import { Injectable, ExecutionContext } from "@nestjs/common";
-import { AuthGuard } from "@nestjs/passport";
-import { Reflector } from "@nestjs/core";
-
-@Injectable()
-export class JwtAuthGuard extends AuthGuard("jwt") {
-  constructor(private reflector: Reflector) {
-    super();
-  }
-
-  canActivate(context: ExecutionContext) {
-    const isPublic = this.reflector.getAllAndOverride<boolean>("isPublic", [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-
-    if (isPublic) {
-      return true;
-    }
-
-    return super.canActivate(context);
-  }
-}
-
-// auth/auth.controller.ts
-import {
-  Controller,
-  Post,
-  Body,
-  UseGuards,
-  HttpCode,
-  HttpStatus,
-  Req,
-} from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
-import { AuthService } from "./auth.service";
-import { LoginDto } from "./dto/login.dto";
-import { RegisterDto } from "./dto/register.dto";
-import { RefreshTokenDto } from "./dto/refresh-token.dto";
-import { JwtAuthGuard } from "./guards/jwt-auth.guard";
-import { Public } from "./decorators/public.decorator";
-
-@ApiTags("auth")
-@Controller("auth")
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  register = asyncHandler(async (req: Request, res: Response) => {
+    const { email, password, firstName, lastName } = req.body;
+    const tokens = await authService.register(email, password, firstName, lastName);
 
-  @Public()
-  @Post("register")
-  @ApiOperation({ summary: "Register a new user" })
-  register(@Body() registerDto: RegisterDto) {
-    return this.authService.register(registerDto);
-  }
-
-  @Public()
-  @Post("login")
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Login user" })
-  login(@Body() loginDto: LoginDto) {
-    return this.authService.login(loginDto);
-  }
-
-  @Public()
-  @Post("refresh")
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Refresh access token" })
-  refresh(@Body() refreshTokenDto: RefreshTokenDto) {
-    return this.authService.refreshTokens(refreshTokenDto.refreshToken);
-  }
-
-  @Post("logout")
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Logout user" })
-  logout(@Req() req) {
-    return this.authService.logout(req.user.id);
-  }
-}
-```
-
-### 2. OAuth 2.0 Implementation (Google, GitHub)
-
-```bash
-npm install @nestjs/passport passport-google-oauth20 passport-github2
-npm install -D @types/passport-google-oauth20 @types/passport-github2
-```
-
-```typescript
-// auth/strategies/google.strategy.ts
-import { Injectable } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
-import { Strategy, VerifyCallback } from 'passport-google-oauth20';
-import { ConfigService } from '@nestjs/config';
-import { AuthService } from '../auth.service';
-
-@Injectable()
-export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
-  constructor(
-    private configService: ConfigService,
-    private authService: AuthService,
-  ) {
-    super({
-      clientID: configService.get('GOOGLE_CLIENT_ID'),
-      clientSecret: configService.get('GOOGLE_CLIENT_SECRET'),
-      callbackURL: configService.get('GOOGLE_CALLBACK_URL'),
-      scope: ['email', 'profile'],
+    res.status(201).json({
+      success: true,
+      data: tokens,
     });
-  }
+  });
 
-  async validate(
-    accessToken: string,
-    refreshToken: string,
-    profile: any,
-    done: VerifyCallback,
-  ) {
-    const { name, emails, photos } = profile;
+  login = asyncHandler(async (req: Request, res: Response) => {
+    const { email, password } = req.body;
+    const tokens = await authService.login(email, password);
 
-    const user = {
-      email: emails[0].value,
-      firstName: name.givenName,
-      lastName: name.familyName,
-      picture: photos[0].value,
-      provider: 'google',
-      providerId: profile.id,
-    };
+    res.json({
+      success: true,
+      data: tokens,
+    });
+  });
 
-    // Find or create user
-    const dbUser = await this.authService.findOrCreateOAuthUser(user);
+  refresh = asyncHandler(async (req: Request, res: Response) => {
+    const { refreshToken } = req.body;
+    const tokens = await authService.refreshTokens(refreshToken);
 
-    done(null, dbUser);
-  }
+    res.json({
+      success: true,
+      data: tokens,
+    });
+  });
+
+  logout = asyncHandler(async (req: Request, res: Response) => {
+    await authService.logout(req.user!.id);
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully',
+    });
+  });
+
+  me = asyncHandler(async (req: Request, res: Response) => {
+    res.json({
+      success: true,
+      data: req.user,
+    });
+  });
 }
 
-// auth/strategies/github.strategy.ts
-import { Injectable } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
-import { Strategy } from 'passport-github2';
-import { ConfigService } from '@nestjs/config';
-import { AuthService } from '../auth.service';
+export default new AuthController();
+\`\`\`
 
-@Injectable()
-export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
-  constructor(
-    private configService: ConfigService,
-    private authService: AuthService,
-  ) {
-    super({
-      clientID: configService.get('GITHUB_CLIENT_ID'),
-      clientSecret: configService.get('GITHUB_CLIENT_SECRET'),
-      callbackURL: configService.get('GITHUB_CALLBACK_URL'),
-      scope: ['user:email'],
-    });
-  }
+\`\`\`typescript
+// src/routes/auth.routes.ts
+import { Router } from 'express';
+import authController from '../controllers/auth.controller';
+import { authenticate } from '../middleware/auth.middleware';
+import { validateRegister, validateLogin } from '../middleware/validation.middleware';
+import { authLimiter } from '../middleware/rateLimiter.middleware';
 
-  async validate(accessToken: string, refreshToken: string, profile: any) {
-    const { displayName, emails, photos } = profile;
+const router = Router();
 
-    const user = {
-      email: emails[0].value,
-      firstName: displayName.split(' ')[0],
-      lastName: displayName.split(' ')[1] || '',
-      picture: photos[0].value,
-      provider: 'github',
-      providerId: profile.id,
-    };
+router.post('/register', authLimiter, validateRegister, authController.register);
+router.post('/login', authLimiter, validateLogin, authController.login);
+router.post('/refresh', authController.refresh);
+router.post('/logout', authenticate, authController.logout);
+router.get('/me', authenticate, authController.me);
 
-    return this.authService.findOrCreateOAuthUser(user);
-  }
-}
+export default router;
+\`\`\`
 
-// auth/auth.service.ts (add OAuth methods)
-async findOrCreateOAuthUser(oauthUser: any) {
-  let user = await this.usersService.findByEmail(oauthUser.email);
+## OAuth Authentication
 
-  if (!user) {
-    // Create new user from OAuth data
-    user = await this.usersService.create({
-      email: oauthUser.email,
-      firstName: oauthUser.firstName,
-      lastName: oauthUser.lastName,
-      picture: oauthUser.picture,
-      provider: oauthUser.provider,
-      providerId: oauthUser.providerId,
-      isEmailVerified: true, // OAuth emails are already verified
-    });
-  }
+### 1. OAuth with Google
+
+\`\`\`bash
+npm install passport-google-oauth20
+npm install -D @types/passport-google-oauth20
+\`\`\`
+
+\`\`\`typescript
+// src/config/passport-google.ts
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+import passport from 'passport';
+import userService from '../services/user.service';
+
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3000/api/v1/auth/google/callback',
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await userService.findByEmail(profile.emails![0].value);
+
+        if (!user) {
+          user = await userService.create({
+            email: profile.emails![0].value,
+            firstName: profile.name!.givenName,
+            lastName: profile.name!.familyName,
+            password: '', // OAuth users don't have password
+            roles: ['user'],
+          });
+        }
+
+        return done(null, user);
+      } catch (error) {
+        return done(error as Error, undefined);
+      }
+    }
+  )
+);
+\`\`\`
+
+\`\`\`typescript
+// src/routes/auth.routes.ts (add OAuth routes)
+import passport from '../config/passport-google';
+
+// Google OAuth
+router.get(
+  '/google',
+  passport.authenticate('google', {
+    scope: ['profile', 'email'],
+    session: false,
+  })
+);
+
+router.get(
+  '/google/callback',
+  passport.authenticate('google', { session: false }),
+  asyncHandler(async (req, res) => {
+    const tokens = await authService.generateTokens(req.user);
+    
+    // Redirect to frontend with tokens
+    res.redirect(\`\${process.env.FRONTEND_URL}/auth/callback?token=\${tokens.accessToken}\`);
+  })
+);
+\`\`\`
+
+### 2. OAuth with GitHub
+
+\`\`\`bash
+npm install passport-github2
+npm install -D @types/passport-github2
+\`\`\`
+
+\`\`\`typescript
+// src/config/passport-github.ts
+import { Strategy as GitHubStrategy } from 'passport-github2';
+import passport from 'passport';
+import userService from '../services/user.service';
+
+passport.use(
+  new GitHubStrategy(
+    {
+      clientID: process.env.GITHUB_CLIENT_ID!,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+      callbackURL: 'http://localhost:3000/api/v1/auth/github/callback',
+    },
+    async (accessToken: string, refreshToken: string, profile: any, done: any) => {
+      try {
+        const email = profile.emails[0].value;
+        let user = await userService.findByEmail(email);
+
+        if (!user) {
+          user = await userService.create({
+            email,
+            firstName: profile.displayName.split(' ')[0],
+            lastName: profile.displayName.split(' ')[1] || '',
+            password: '',
+            roles: ['user'],
+          });
+        }
+
+        return done(null, user);
+      } catch (error) {
+        return done(error, undefined);
+      }
+    }
+  )
+);
+\`\`\`
+
+## Session-Based Authentication
+
+### 1. Setup Express Session
+
+\`\`\`bash
+npm install express-session connect-pg-simple
+npm install -D @types/express-session
+\`\`\`
+
+\`\`\`typescript
+// src/config/session.ts
+import session from 'express-session';
+import connectPgSimple from 'connect-pg-simple';
+import { Pool } from 'pg';
+
+const PgSession = connectPgSimple(session);
+
+const pgPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+export const sessionConfig = session({
+  store: new PgSession({
+    pool: pgPool,
+    tableName: 'session',
+  }),
+  secret: process.env.SESSION_SECRET || 'session-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    sameSite: 'lax',
+  },
+});
+\`\`\`
+
+\`\`\`typescript
+// src/server.ts (add session middleware)
+import { sessionConfig } from './config/session';
+
+app.use(sessionConfig);
+\`\`\`
+
+\`\`\`typescript
+// src/services/auth.service.ts (add session methods)
+async loginWithSession(req: any, email: string, password: string) {
+  const user = await this.validateUser(email, password);
+
+  // Store user in session
+  req.session.userId = user.id;
+  req.session.user = {
+    id: user.id,
+    email: user.email,
+    roles: user.roles,
+  };
 
   return user;
 }
 
-// auth/guards/google-auth.guard.ts
-import { Injectable } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-
-@Injectable()
-export class GoogleAuthGuard extends AuthGuard('google') {}
-
-// auth/guards/github-auth.guard.ts
-import { Injectable } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-
-@Injectable()
-export class GithubAuthGuard extends AuthGuard('github') {}
-
-// auth/auth.controller.ts (add OAuth routes)
-@Get('google')
-@UseGuards(GoogleAuthGuard)
-@ApiOperation({ summary: 'Login with Google' })
-googleAuth() {
-  // Initiates Google OAuth flow
-}
-
-@Get('google/callback')
-@UseGuards(GoogleAuthGuard)
-@ApiOperation({ summary: 'Google OAuth callback' })
-async googleAuthCallback(@Req() req, @Res() res) {
-  const tokens = await this.authService.generateTokens(req.user);
-
-  // Redirect to frontend with tokens
-  res.redirect(`${process.env.FRONTEND_URL}/auth/callback?token=${tokens.accessToken}`);
-}
-
-@Get('github')
-@UseGuards(GithubAuthGuard)
-@ApiOperation({ summary: 'Login with GitHub' })
-githubAuth() {
-  // Initiates GitHub OAuth flow
-}
-
-@Get('github/callback')
-@UseGuards(GithubAuthGuard)
-@ApiOperation({ summary: 'GitHub OAuth callback' })
-async githubAuthCallback(@Req() req, @Res() res) {
-  const tokens = await this.authService.generateTokens(req.user);
-  res.redirect(`${process.env.FRONTEND_URL}/auth/callback?token=${tokens.accessToken}`);
-}
-```
-
-### 3. Session-Based Authentication
-
-```bash
-npm install express-session connect-redis redis
-npm install -D @types/express-session @types/connect-redis
-```
-
-```typescript
-// main.ts
-import * as session from 'express-session';
-import { createClient } from 'redis';
-import RedisStore from 'connect-redis';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  // Redis client
-  const redisClient = createClient({
-    url: process.env.REDIS_URL,
-  });
-  await redisClient.connect();
-
-  // Session middleware
-  app.use(
-    session({
-      store: new RedisStore({ client: redisClient }),
-      secret: process.env.SESSION_SECRET,
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        maxAge: 1000 * 60 * 60 * 24, // 1 day
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production', // HTTPS only in production
-        sameSite: 'lax',
-      },
-    }),
-  );
-
-  await app.listen(3000);
-}
-
-// auth/strategies/session.strategy.ts
-import { Injectable } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
-import { Strategy } from 'passport-local';
-import { AuthService } from '../auth.service';
-
-@Injectable()
-export class SessionStrategy extends PassportStrategy(Strategy, 'session') {
-  constructor(private authService: AuthService) {
-    super({
-      usernameField: 'email',
-      passReqToCallback: false,
+logoutFromSession(req: any) {
+  return new Promise((resolve, reject) => {
+    req.session.destroy((err: any) => {
+      if (err) reject(err);
+      resolve(true);
     });
-  }
-
-  async validate(email: string, password: string) {
-    return this.authService.validateUser(email, password);
-  }
-}
-
-// auth/serializer/session.serializer.ts
-import { Injectable } from '@nestjs/common';
-import { PassportSerializer } from '@nestjs/passport';
-import { UsersService } from '../../users/users.service';
-
-@Injectable()
-export class SessionSerializer extends PassportSerializer {
-  constructor(private usersService: UsersService) {
-    super();
-  }
-
-  serializeUser(user: any, done: (err: Error, user: any) => void) {
-    done(null, { id: user.id });
-  }
-
-  async deserializeUser(payload: any, done: (err: Error, user: any) => void) {
-    const user = await this.usersService.findOne(payload.id);
-    done(null, user);
-  }
-}
-
-// auth/guards/session-auth.guard.ts
-import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
-
-@Injectable()
-export class SessionAuthGuard implements CanActivate {
-  canActivate(context: ExecutionContext): boolean {
-    const request = context.switchToHttp().getRequest();
-    return request.isAuthenticated();
-  }
-}
-
-// auth/auth.controller.ts (session endpoints)
-@Post('session/login')
-@UseGuards(LocalAuthGuard)
-@HttpCode(HttpStatus.OK)
-sessionLogin(@Req() req) {
-  return { user: req.user };
-}
-
-@Post('session/logout')
-@UseGuards(SessionAuthGuard)
-@HttpCode(HttpStatus.OK)
-sessionLogout(@Req() req, @Res() res) {
-  req.logout((err) => {
-    if (err) {
-      return res.status(500).json({ message: 'Logout failed' });
-    }
-    res.json({ message: 'Logged out successfully' });
   });
 }
+\`\`\`
 
-@Get('session/me')
-@UseGuards(SessionAuthGuard)
-getSessionUser(@Req() req) {
-  return req.user;
-}
-```
+\`\`\`typescript
+// src/middleware/session-auth.middleware.ts
+import { Request, Response, NextFunction } from 'express';
+import { AppError } from '../utils/AppError';
 
-### 4. Multi-Factor Authentication (MFA)
-
-```bash
-npm install otplib qrcode
-npm install -D @types/qrcode
-```
-
-```typescript
-// auth/mfa.service.ts
-import { Injectable } from '@nestjs/common';
-import { authenticator } from 'otplib';
-import * as QRCode from 'qrcode';
-import { UsersService } from '../users/users.service';
-
-@Injectable()
-export class MfaService {
-  constructor(private usersService: UsersService) {}
-
-  async generateSecret(userId: string) {
-    const user = await this.usersService.findOne(userId);
-    const secret = authenticator.generateSecret();
-
-    const otpauth = authenticator.keyuri(
-      user.email,
-      'MyApp',
-      secret,
-    );
-
-    // Generate QR code
-    const qrCode = await QRCode.toDataURL(otpauth);
-
-    // Save secret to user (encrypted)
-    await this.usersService.updateMfaSecret(userId, secret);
-
-    return {
-      secret,
-      qrCode,
-    };
+export const requireSession = (req: Request, res: Response, next: NextFunction) => {
+  if (!req.session.userId) {
+    throw new AppError('Not authenticated', 401);
   }
 
-  async verifyToken(userId: string, token: string): Promise<boolean> {
-    const user = await this.usersService.findOne(userId);
+  req.user = req.session.user;
+  next();
+};
+\`\`\`
 
-    if (!user.mfaSecret) {
-      return false;
-    }
+## Security Best Practices
 
-    return authenticator.verify({
-      token,
-      secret: user.mfaSecret,
-    });
-  }
+### 1. Password Hashing
 
-  async enableMfa(userId: string, token: string): Promise<boolean> {
-    const isValid = await this.verifyToken(userId, token);
+\`\`\`typescript
+// Strong password hashing with bcrypt
+import bcrypt from 'bcrypt';
 
-    if (isValid) {
-      await this.usersService.enableMfa(userId);
-      return true;
-    }
+const SALT_ROUNDS = 10;
 
-    return false;
-  }
-
-  async disableMfa(userId: string, token: string): Promise<boolean> {
-    const isValid = await this.verifyToken(userId, token);
-
-    if (isValid) {
-      await this.usersService.disableMfa(userId);
-      return true;
-    }
-
-    return false;
-  }
+async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, SALT_ROUNDS);
 }
 
-// auth/auth.controller.ts (MFA endpoints)
-@Post('mfa/setup')
-@UseGuards(JwtAuthGuard)
-@ApiBearerAuth()
-setupMfa(@CurrentUser('id') userId: string) {
-  return this.mfaService.generateSecret(userId);
+async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(password, hash);
 }
-
-@Post('mfa/enable')
-@UseGuards(JwtAuthGuard)
-@ApiBearerAuth()
-enableMfa(@CurrentUser('id') userId: string, @Body() body: { token: string }) {
-  return this.mfaService.enableMfa(userId, body.token);
-}
-
-@Post('mfa/verify')
-@UseGuards(JwtAuthGuard)
-@ApiBearerAuth()
-verifyMfa(@CurrentUser('id') userId: string, @Body() body: { token: string }) {
-  return this.mfaService.verifyToken(userId, body.token);
-}
-```
-
-## Best Practices
-
-### 1. Password Security
-
-```typescript
-// Use bcrypt with appropriate rounds
-const saltRounds = 10; // 10-12 rounds recommended
-const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-// Implement password strength requirements
-import * as zxcvbn from "zxcvbn";
-
-function validatePasswordStrength(password: string) {
-  const result = zxcvbn(password);
-  return result.score >= 3; // 0-4 scale
-}
-```
+\`\`\`
 
 ### 2. Token Security
 
-```typescript
-// Store refresh tokens securely
-- Hash refresh tokens before storing in database
-- Use httpOnly cookies for tokens when possible
-- Implement token rotation
-- Set appropriate expiration times (15min access, 7d refresh)
-```
+\`\`\`typescript
+// Secure token generation
+import crypto from 'crypto';
+
+function generateSecureToken(bytes: number = 32): string {
+  return crypto.randomBytes(bytes).toString('hex');
+}
+
+// Token blacklisting for logout
+class TokenBlacklist {
+  private tokens: Set<string> = new Set();
+
+  add(token: string, expiresIn: number) {
+    this.tokens.add(token);
+    setTimeout(() => this.tokens.delete(token), expiresIn);
+  }
+
+  has(token: string): boolean {
+    return this.tokens.has(token);
+  }
+}
+
+export const tokenBlacklist = new TokenBlacklist();
+\`\`\`
 
 ### 3. Rate Limiting
 
-```typescript
-// Implement rate limiting on auth endpoints
-@Throttle({ default: { limit: 3, ttl: 300000 } }) // 3 attempts per 5 min
-@Post('login')
-login(@Body() loginDto: LoginDto) {}
-```
+\`\`\`typescript
+// src/middleware/rateLimiter.middleware.ts
+import rateLimit from 'express-rate-limit';
+
+export const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts
+  message: 'Too many authentication attempts, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+});
+
+export const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3, // 3 registrations per hour
+  message: 'Too many accounts created, please try again later',
+});
+\`\`\`
+
+### 4. CSRF Protection
+
+\`\`\`bash
+npm install csurf
+\`\`\`
+
+\`\`\`typescript
+// src/middleware/csrf.middleware.ts
+import csrf from 'csurf';
+
+export const csrfProtection = csrf({ cookie: true });
+
+// In routes
+router.post('/login', csrfProtection, authController.login);
+
+// Send CSRF token to client
+router.get('/csrf-token', csrfProtection, (req, res) => {
+  res.json({ csrfToken: req.csrfToken() });
+});
+\`\`\`
+
+### 5. Password Reset Flow
+
+\`\`\`typescript
+// src/services/auth.service.ts
+async requestPasswordReset(email: string) {
+  const user = await userService.findByEmail(email);
+  if (!user) {
+    // Don't reveal if email exists
+    return;
+  }
+
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+  
+  await userService.updateResetToken(user.id, hashedToken, Date.now() + 3600000); // 1 hour
+
+  // Send email with resetToken
+  await emailService.sendPasswordReset(email, resetToken);
+}
+
+async resetPassword(token: string, newPassword: string) {
+  const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+  
+  const user = await userService.findByResetToken(hashedToken);
+  
+  if (!user || user.resetTokenExpiry < Date.now()) {
+    throw new AppError('Invalid or expired reset token', 400);
+  }
+
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  await userService.updatePassword(user.id, hashedPassword);
+  await userService.clearResetToken(user.id);
+}
+\`\`\`
+
+## Testing
+
+\`\`\`typescript
+// src/__tests__/auth.test.ts
+import request from 'supertest';
+import app from '../server';
+
+describe('Authentication', () => {
+  describe('POST /api/v1/auth/register', () => {
+    it('should register a new user', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          email: 'newuser@example.com',
+          password: 'SecurePass123!',
+          firstName: 'John',
+          lastName: 'Doe',
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data).toHaveProperty('accessToken');
+      expect(res.body.data).toHaveProperty('refreshToken');
+    });
+
+    it('should not register duplicate email', async () => {
+      await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          email: 'duplicate@example.com',
+          password: 'password123',
+          firstName: 'John',
+          lastName: 'Doe',
+        });
+
+      const res = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          email: 'duplicate@example.com',
+          password: 'password123',
+          firstName: 'Jane',
+          lastName: 'Doe',
+        });
+
+      expect(res.status).toBe(409);
+    });
+  });
+
+  describe('POST /api/v1/auth/login', () => {
+    it('should login with valid credentials', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/login')
+        .send({
+          email: 'test@example.com',
+          password: 'password123',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveProperty('accessToken');
+    });
+
+    it('should reject invalid credentials', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/login')
+        .send({
+          email: 'test@example.com',
+          password: 'wrongpassword',
+        });
+
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /api/v1/auth/refresh', () => {
+    it('should refresh tokens', async () => {
+      const loginRes = await request(app)
+        .post('/api/v1/auth/login')
+        .send({
+          email: 'test@example.com',
+          password: 'password123',
+        });
+
+      const refreshToken = loginRes.body.data.refreshToken;
+
+      const res = await request(app)
+        .post('/api/v1/auth/refresh')
+        .send({ refreshToken });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveProperty('accessToken');
+    });
+  });
+});
+\`\`\`
 
 ## Key Takeaways
 
-1. **JWT**: Stateless, scalable, perfect for APIs and SPAs
-2. **OAuth**: Delegate authentication to trusted providers
-3. **Sessions**: Traditional, server-side, good for web apps
-4. **MFA**: Add extra security layer for sensitive operations
-5. **Hash passwords**: Always use bcrypt or argon2
-6. **Short-lived tokens**: 15min access, longer refresh tokens
-7. **Secure storage**: httpOnly cookies or secure localStorage
-8. **Rate limiting**: Prevent brute force attacks
+1. **JWT** is stateless and scalable for APIs
+2. **OAuth** enables third-party authentication
+3. **Sessions** work well for traditional web apps
+4. **Passport.js** simplifies strategy implementation
+5. **Rate limiting** protects against brute force
+6. **Bcrypt** for secure password hashing
+7. **Refresh tokens** enable secure long-term sessions
+8. **CSRF protection** prevents cross-site attacks
 
-Choose the authentication strategy that best fits your application's needs and security requirements.
+Choose the right strategy based on your application needs and scale requirements.

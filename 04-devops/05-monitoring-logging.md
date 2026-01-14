@@ -123,44 +123,44 @@ export const logger = winston.createLogger({
 });
 
 // src/middleware/request-logger.middleware.ts
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../config/logger";
 
-@Injectable()
-export class RequestLoggerMiddleware implements NestMiddleware {
-  use(req: Request, res: Response, next: NextFunction) {
-    const start = Date.now();
+export function requestLoggerMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  const start = Date.now();
 
-    // Log request
-    logger.info("Incoming request", {
+  // Log request
+  logger.info("Incoming request", {
+    method: req.method,
+    url: req.url,
+    ip: req.ip,
+    userAgent: req.get("user-agent"),
+  });
+
+  // Log response
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+
+    const logData = {
       method: req.method,
       url: req.url,
-      ip: req.ip,
-      userAgent: req.get("user-agent"),
-    });
+      statusCode: res.statusCode,
+      duration,
+      contentLength: res.get("content-length"),
+    };
 
-    // Log response
-    res.on("finish", () => {
-      const duration = Date.now() - start;
+    if (res.statusCode >= 400) {
+      logger.error("Request failed", logData);
+    } else {
+      logger.info("Request completed", logData);
+    }
+  });
 
-      const logData = {
-        method: req.method,
-        url: req.url,
-        statusCode: res.statusCode,
-        duration,
-        contentLength: res.get("content-length"),
-      };
-
-      if (res.statusCode >= 400) {
-        logger.error("Request failed", logData);
-      } else {
-        logger.info("Request completed", logData);
-      }
-    });
-
-    next();
-  }
+  next();
 }
 ```
 
@@ -304,7 +304,6 @@ export const dbConnectionsActive = new Gauge({
 });
 
 // src/middleware/metrics.middleware.ts
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 import {
   httpRequestDuration,
@@ -312,72 +311,70 @@ import {
   httpRequestErrors,
 } from "../config/metrics";
 
-@Injectable()
-export class MetricsMiddleware implements NestMiddleware {
-  use(req: Request, res: Response, next: NextFunction) {
-    const start = Date.now();
+export function metricsMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  const start = Date.now();
 
-    res.on("finish", () => {
-      const duration = (Date.now() - start) / 1000;
-      const route = req.route?.path || req.path;
+  res.on("finish", () => {
+    const duration = (Date.now() - start) / 1000;
+    const route = req.route?.path || req.path;
 
-      const labels = {
+    const labels = {
+      method: req.method,
+      route,
+      status_code: res.statusCode.toString(),
+    };
+
+    httpRequestDuration.observe(labels, duration);
+    httpRequestTotal.inc(labels);
+
+    if (res.statusCode >= 400) {
+      httpRequestErrors.inc({
         method: req.method,
         route,
-        status_code: res.statusCode.toString(),
-      };
+        error_type: res.statusCode >= 500 ? "server_error" : "client_error",
+      });
+    }
+  });
 
-      httpRequestDuration.observe(labels, duration);
-      httpRequestTotal.inc(labels);
-
-      if (res.statusCode >= 400) {
-        httpRequestErrors.inc({
-          method: req.method,
-          route,
-          error_type: res.statusCode >= 500 ? "server_error" : "client_error",
-        });
-      }
-    });
-
-    next();
-  }
+  next();
 }
 
-// src/controllers/metrics.controller.ts
-import { Controller, Get, Header } from "@nestjs/common";
+// src/routes/metrics.routes.ts
+import { Router, Request, Response } from "express";
 import { register } from "prom-client";
 
-@Controller("metrics")
-export class MetricsController {
-  @Get()
-  @Header("Content-Type", register.contentType)
-  async getMetrics() {
-    return register.metrics();
-  }
-}
+const router = Router();
+
+router.get("/metrics", async (req: Request, res: Response) => {
+  res.setHeader("Content-Type", register.contentType);
+  res.send(await register.metrics());
+});
+
+export default router;
 ```
 
 ### 2. Health Checks
 
 ```typescript
-// src/health/health.controller.ts
-import { Controller, Get } from "@nestjs/common";
-import {
-  HealthCheck,
-  HealthCheckService,
-  TypeOrmHealthIndicator,
-  DiskHealthIndicator,
-  MemoryHealthIndicator,
-} from "@nestjs/terminus";
-import { RedisHealthIndicator } from "./redis-health.indicator";
+// src/routes/health.routes.ts
+import { Router, Request, Response } from "express";
+import { AppDataSource } from "../database/data-source";
+import { redisClient } from "../config/redis";
 
-@Controller("health")
-export class HealthController {
-  constructor(
-    private health: HealthCheckService,
-    private db: TypeOrmHealthIndicator,
-    private redis: RedisHealthIndicator,
-    private disk: DiskHealthIndicator,
+const router = Router();
+
+router.get("/health", async (req: Request, res: Response) => {
+  const checks = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    checks: {
+      database: { status: "unknown" },
+      redis: { status: "unknown" },
+      disk: { status: "unknown" },
     private memory: MemoryHealthIndicator
   ) {}
 
@@ -410,16 +407,13 @@ export class HealthController {
 }
 
 // src/health/redis-health.indicator.ts
-import { Injectable } from "@nestjs/common";
 import {
   HealthIndicator,
   HealthIndicatorResult,
   HealthCheckError,
-} from "@nestjs/terminus";
-import { InjectRedis } from "@nestjs-modules/ioredis";
+import Redis from "ioredis";
 import { Redis } from "ioredis";
 
-@Injectable()
 export class RedisHealthIndicator extends HealthIndicator {
   constructor(@InjectRedis() private readonly redis: Redis) {
     super();
@@ -508,8 +502,6 @@ Sentry.init({
 });
 
 // src/filters/sentry-exception.filter.ts
-import { Catch, ArgumentsHost, HttpException } from "@nestjs/common";
-import { BaseExceptionFilter } from "@nestjs/core";
 import * as Sentry from "@sentry/node";
 
 @Catch()

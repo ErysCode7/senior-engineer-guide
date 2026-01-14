@@ -39,10 +39,8 @@ export const openai = new OpenAI({
 
 ```typescript
 // src/services/openai.service.ts
-import { Injectable } from "@nestjs/common";
 import { openai } from "../config/openai.config";
 
-@Injectable()
 export class OpenAIService {
   async generateChatCompletion(
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
@@ -98,10 +96,8 @@ const response = await openaiService.generateSimpleResponse(
 
 ```typescript
 // src/services/openai-stream.service.ts
-import { Injectable } from "@nestjs/common";
 import { openai } from "../config/openai.config";
 
-@Injectable()
 export class OpenAIStreamService {
   async *streamChatCompletion(
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
@@ -122,10 +118,8 @@ export class OpenAIStreamService {
 }
 
 // Controller implementation for streaming
-import { Controller, Post, Body, Res } from "@nestjs/common";
 import { Response } from "express";
 
-@Controller("api/ai")
 export class AIController {
   constructor(private readonly streamService: OpenAIStreamService) {}
 
@@ -156,7 +150,6 @@ export class AIController {
 
 ```typescript
 // src/services/openai-functions.service.ts
-import { Injectable } from "@nestjs/common";
 import { openai } from "../config/openai.config";
 
 interface FunctionDefinition {
@@ -169,7 +162,6 @@ interface FunctionDefinition {
   };
 }
 
-@Injectable()
 export class OpenAIFunctionsService {
   private functions: FunctionDefinition[] = [
     {
@@ -338,10 +330,8 @@ export const anthropic = new Anthropic({
 
 ```typescript
 // src/services/anthropic.service.ts
-import { Injectable } from "@nestjs/common";
 import { anthropic } from "../config/anthropic.config";
 
-@Injectable()
 export class AnthropicService {
   async generateMessage(
     prompt: string,
@@ -403,10 +393,8 @@ export class AnthropicService {
 
 ```typescript
 // src/services/anthropic-stream.service.ts
-import { Injectable } from "@nestjs/common";
 import { anthropic } from "../config/anthropic.config";
 
-@Injectable()
 export class AnthropicStreamService {
   async *streamMessage(prompt: string): AsyncGenerator<string> {
     const stream = await anthropic.messages.create({
@@ -462,14 +450,12 @@ export const systemPrompts = {
 
 ```typescript
 // src/services/prompt-builder.service.ts
-import { Injectable } from "@nestjs/common";
 
 interface PromptTemplate {
   system: string;
   userTemplate: string;
 }
 
-@Injectable()
 export class PromptBuilderService {
   private templates: Record<string, PromptTemplate> = {
     summarize: {
@@ -539,10 +525,8 @@ const prompt = promptBuilder.buildPrompt("summarize", {
 
 ```typescript
 // src/services/few-shot.service.ts
-import { Injectable } from "@nestjs/common";
 import { openai } from "../config/openai.config";
 
-@Injectable()
 export class FewShotService {
   async classifyWithExamples(text: string, category: string) {
     const examples = {
@@ -592,10 +576,8 @@ export class FewShotService {
 
 ```typescript
 // src/services/token-counter.service.ts
-import { Injectable } from "@nestjs/common";
 import { encode } from "gpt-tokenizer";
 
-@Injectable()
 export class TokenCounterService {
   countTokens(text: string): number {
     return encode(text).length;
@@ -644,11 +626,9 @@ export class TokenCounterService {
 
 ```typescript
 // src/services/ai-cache.service.ts
-import { Injectable } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import * as crypto from 'crypto';
 
-@Injectable()
 export class AICacheService {
   private redis: Redis;
 
@@ -721,7 +701,6 @@ async generateWithCache(prompt: string) {
 
 ```typescript
 // src/services/model-selector.service.ts
-import { Injectable } from "@nestjs/common";
 
 interface ModelConfig {
   name: string;
@@ -730,7 +709,6 @@ interface ModelConfig {
   speed: number;
 }
 
-@Injectable()
 export class ModelSelectorService {
   private models: Record<string, ModelConfig> = {
     "gpt-4-turbo": {
@@ -791,9 +769,7 @@ export class ModelSelectorService {
 
 ```typescript
 // src/services/ai-resilience.service.ts
-import { Injectable } from "@nestjs/common";
 
-@Injectable()
 export class AIResilienceService {
   async withRetry<T>(
     operation: () => Promise<T>,

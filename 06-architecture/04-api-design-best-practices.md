@@ -51,9 +51,7 @@ import {
   Param,
   HttpStatus,
   HttpException,
-} from "@nestjs/common";
 
-@Controller("api/users")
 export class UsersController {
   // GET - Retrieve resource(s)
   @Get()
@@ -129,7 +127,6 @@ export class UsersController {
 ### Pagination and Filtering
 
 ```typescript
-import { Controller, Get, Query } from "@nestjs/common";
 
 interface PaginationQuery {
   page?: number;
@@ -148,7 +145,6 @@ interface PaginatedResponse<T> {
   };
 }
 
-@Controller("api/products")
 export class ProductsController {
   @Get()
   async findAll(
@@ -204,7 +200,6 @@ import {
   ArgumentsHost,
   HttpException,
   HttpStatus,
-} from "@nestjs/common";
 
 interface ErrorResponse {
   statusCode: number;
@@ -250,7 +245,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 }
 
 // Validation error example
-import { IsEmail, IsNotEmpty, MinLength } from "class-validator";
+import { IsEmail, IsNotEmpty, MinLength } from "express-validator";
 
 export class CreateUserDto {
   @IsNotEmpty({ message: "Name is required" })
@@ -412,8 +407,6 @@ import {
   Args,
   ResolveField,
   Parent,
-} from "@nestjs/graphql";
-import { UseGuards } from "@nestjs/common";
 
 @Resolver("User")
 export class UserResolver {
@@ -523,10 +516,7 @@ export class PostResolver {
 
 ```typescript
 // src/app.module.ts
-import { Module } from "@nestjs/common";
-import { RouterModule } from "@nestjs/core";
 
-@Module({
   imports: [
     // Version 1
     UsersV1Module,
@@ -565,17 +555,13 @@ export class AppModule {}
 
 ```typescript
 // src/common/decorators/api-version.decorator.ts
-import { SetMetadata } from "@nestjs/common";
 
 export const API_VERSION_KEY = "apiVersion";
 export const ApiVersion = (version: string) =>
   SetMetadata(API_VERSION_KEY, version);
 
 // src/common/guards/api-version.guard.ts
-import { Injectable, CanActivate, ExecutionContext } from "@nestjs/common";
-import { Reflector } from "@nestjs/core";
 
-@Injectable()
 export class ApiVersionGuard implements CanActivate {
   constructor(private reflector: Reflector) {}
 
@@ -598,7 +584,7 @@ export class ApiVersionGuard implements CanActivate {
 }
 
 // Usage in controller
-@Controller("api/users")
+
 export class UsersController {
   @Get()
   @ApiVersion("1.0")
@@ -629,11 +615,9 @@ import {
   NestInterceptor,
   ExecutionContext,
   CallHandler,
-} from "@nestjs/common";
 import { Observable } from "rxjs";
 import { map } from "rxjs/operators";
 
-@Injectable()
 export class ContentNegotiationInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const request = context.switchToHttp().getRequest();
@@ -683,12 +667,9 @@ export class ContentNegotiationInterceptor implements NestInterceptor {
 
 ```typescript
 // src/main.ts
-import { NestFactory } from "@nestjs/core";
-import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
-import { ValidationPipe } from "@nestjs/common";
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = express();
 
   // Swagger configuration
   const config = new DocumentBuilder()
@@ -728,7 +709,6 @@ bootstrap();
 
 ```typescript
 // src/controllers/users.controller.ts
-import { Controller, Get, Post, Body, Param } from "@nestjs/common";
 import {
   ApiTags,
   ApiOperation,
@@ -736,10 +716,9 @@ import {
   ApiParam,
   ApiBody,
   ApiBearerAuth,
-} from "@nestjs/swagger";
 
 @ApiTags("users")
-@Controller("api/users")
+
 export class UsersController {
   @Get()
   @ApiOperation({
@@ -807,8 +786,7 @@ export class UsersController {
 }
 
 // src/dto/create-user.dto.ts
-import { ApiProperty } from "@nestjs/swagger";
-import { IsEmail, IsNotEmpty, MinLength } from "class-validator";
+import { IsEmail, IsNotEmpty, MinLength } from "express-validator";
 
 export class CreateUserDto {
   @ApiProperty({
@@ -839,10 +817,7 @@ export class CreateUserDto {
 
 ```typescript
 // src/common/guards/throttle.guard.ts
-import { Injectable } from "@nestjs/common";
-import { ThrottlerGuard } from "@nestjs/throttler";
 
-@Injectable()
 export class CustomThrottlerGuard extends ThrottlerGuard {
   protected async getTracker(req: Record<string, any>): Promise<string> {
     // Track by user ID if authenticated, otherwise by IP
@@ -851,11 +826,7 @@ export class CustomThrottlerGuard extends ThrottlerGuard {
 }
 
 // src/app.module.ts
-import { Module } from "@nestjs/common";
-import { ThrottlerModule } from "@nestjs/throttler";
-import { APP_GUARD } from "@nestjs/core";
 
-@Module({
   imports: [
     ThrottlerModule.forRoot({
       ttl: 60, // Time window in seconds
@@ -872,9 +843,7 @@ import { APP_GUARD } from "@nestjs/core";
 export class AppModule {}
 
 // Per-endpoint throttling
-import { Throttle } from "@nestjs/throttler";
 
-@Controller("api/auth")
 export class AuthController {
   @Post("login")
   @Throttle(5, 60) // 5 requests per minute
@@ -909,7 +878,7 @@ interface ApiResponse<T> {
 
 ### 2. **Use DTOs for Validation**
 
-Always validate input using Data Transfer Objects with class-validator.
+Always validate input using Data Transfer Objects with express-validator.
 
 ### 3. **Implement HATEOAS (for REST)**
 

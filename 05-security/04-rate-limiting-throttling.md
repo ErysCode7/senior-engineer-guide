@@ -59,17 +59,13 @@ Manage cloud costs
 - Cloud function executions
 - Database queries
 
-## NestJS Rate Limiting
+## Express Rate Limiting
 
 ### 1. Basic Throttler Setup
 
 ```typescript
 // app.module.ts
-import { Module } from "@nestjs/common";
-import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
-import { APP_GUARD } from "@nestjs/core";
 
-@Module({
   imports: [
     ThrottlerModule.forRoot([
       {
@@ -88,10 +84,7 @@ import { APP_GUARD } from "@nestjs/core";
 export class AppModule {}
 
 // controllers/user.controller.ts
-import { Controller, Get, Post, UseGuards } from "@nestjs/common";
-import { Throttle, SkipThrottle } from "@nestjs/throttler";
 
-@Controller("users")
 export class UserController {
   // Use default rate limit (10 requests per minute)
   @Get()
@@ -126,8 +119,7 @@ export class UserController {
 
 ```typescript
 // config/throttler.config.ts
-import { ThrottlerModuleOptions } from "@nestjs/throttler";
-import { ThrottlerStorageRedisService } from "nestjs-throttler-storage-redis";
+import { ThrottlerStorageRedisService } from "rate-limit-redis";
 import Redis from "ioredis";
 
 export const throttlerConfig: ThrottlerModuleOptions = {
@@ -147,11 +139,8 @@ export const throttlerConfig: ThrottlerModuleOptions = {
 };
 
 // app.module.ts
-import { Module } from "@nestjs/common";
-import { ThrottlerModule } from "@nestjs/throttler";
 import { throttlerConfig } from "./config/throttler.config";
 
-@Module({
   imports: [ThrottlerModule.forRoot(throttlerConfig)],
 })
 export class AppModule {}
@@ -161,11 +150,7 @@ export class AppModule {}
 
 ```typescript
 // guards/user-throttler.guard.ts
-import { Injectable, ExecutionContext } from "@nestjs/common";
-import { ThrottlerGuard, ThrottlerException } from "@nestjs/throttler";
-import { ThrottlerRequest } from "@nestjs/throttler/dist/throttler.guard.interface";
 
-@Injectable()
 export class UserThrottlerGuard extends ThrottlerGuard {
   protected async getTracker(req: Record<string, any>): Promise<string> {
     // Rate limit by user ID if authenticated, otherwise by IP
@@ -193,7 +178,7 @@ export class UserThrottlerGuard extends ThrottlerGuard {
 }
 
 // Usage
-@Controller("api")
+
 @UseGuards(UserThrottlerGuard)
 export class ApiController {
   @Get("data")
@@ -207,7 +192,6 @@ export class ApiController {
 
 ```typescript
 // decorators/rate-limit.decorator.ts
-import { SetMetadata } from "@nestjs/common";
 
 export const RATE_LIMIT_KEY = "rate_limit";
 
@@ -221,8 +205,6 @@ export const RateLimit = (options: RateLimitOptions) =>
   SetMetadata(RATE_LIMIT_KEY, options);
 
 // guards/custom-rate-limit.guard.ts
-import { Injectable, CanActivate, ExecutionContext } from "@nestjs/common";
-import { Reflector } from "@nestjs/core";
 import { RateLimiterRedis, RateLimiterRes } from "rate-limiter-flexible";
 import Redis from "ioredis";
 import {
@@ -230,7 +212,6 @@ import {
   RateLimitOptions,
 } from "../decorators/rate-limit.decorator";
 
-@Injectable()
 export class CustomRateLimitGuard implements CanActivate {
   private redis: Redis;
   private limiters: Map<string, RateLimiterRedis> = new Map();
@@ -296,7 +277,7 @@ export class CustomRateLimitGuard implements CanActivate {
 }
 
 // Usage
-@Controller("api")
+
 export class ApiController {
   @Post("expensive-operation")
   @RateLimit({ points: 5, duration: 3600 }) // 5 requests per hour
@@ -320,11 +301,9 @@ export class ApiController {
 
 ```typescript
 // services/sliding-window-rate-limiter.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectRedis } from "@nestjs-modules/ioredis";
+import { InjectRedis } from "ioredis";
 import Redis from "ioredis";
 
-@Injectable()
 export class SlidingWindowRateLimiterService {
   constructor(@InjectRedis() private readonly redis: Redis) {}
 
@@ -368,8 +347,7 @@ export class SlidingWindowRateLimiterService {
 
 ```typescript
 // services/token-bucket-rate-limiter.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectRedis } from "@nestjs-modules/ioredis";
+import { InjectRedis } from "ioredis";
 import Redis from "ioredis";
 
 interface BucketState {
@@ -377,7 +355,6 @@ interface BucketState {
   lastRefill: number;
 }
 
-@Injectable()
 export class TokenBucketRateLimiterService {
   constructor(@InjectRedis() private readonly redis: Redis) {}
 
@@ -427,11 +404,9 @@ export class TokenBucketRateLimiterService {
 
 ```typescript
 // services/leaky-bucket-rate-limiter.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectRedis } from "@nestjs-modules/ioredis";
+import { InjectRedis } from "ioredis";
 import Redis from "ioredis";
 
-@Injectable()
 export class LeakyBucketRateLimiterService {
   constructor(@InjectRedis() private readonly redis: Redis) {}
 
@@ -505,11 +480,9 @@ import {
   NestInterceptor,
   ExecutionContext,
   CallHandler,
-} from "@nestjs/common";
 import { Observable } from "rxjs";
 import { tap } from "rxjs/operators";
 
-@Injectable()
 export class RateLimitHeadersInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const request = context.switchToHttp().getRequest();
@@ -533,8 +506,7 @@ export class RateLimitHeadersInterceptor implements NestInterceptor {
 
 ```typescript
 // services/progressive-rate-limiter.service.ts
-import { Injectable } from "@nestjs/common";
-import { InjectRedis } from "@nestjs-modules/ioredis";
+import { InjectRedis } from "ioredis";
 import Redis from "ioredis";
 
 interface ProgressiveLimit {
@@ -542,7 +514,6 @@ interface ProgressiveLimit {
   limit: number;
 }
 
-@Injectable()
 export class ProgressiveRateLimiterService {
   constructor(@InjectRedis() private readonly redis: Redis) {}
 
@@ -595,9 +566,7 @@ const result = await this.progressiveRateLimiter.checkLimits(userId, limits);
 
 ```typescript
 // services/dynamic-rate-limiter.service.ts
-import { Injectable } from "@nestjs/common";
 
-@Injectable()
 export class DynamicRateLimiterService {
   private baseLimit = 100;
   private currentLoad = 0;
@@ -630,7 +599,6 @@ const OPERATION_COSTS = {
   "POST /api/export": 10,
 };
 
-@Injectable()
 export class CostBasedRateLimiterGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();

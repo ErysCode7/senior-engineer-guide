@@ -552,32 +552,42 @@ try {
   client.release();
 }
 
-// Query result caching
-import { CACHE_MANAGER } from "@nestjs/cache-manager";
-import { Inject } from "@nestjs/common";
+// Query result caching with Redis
+import Redis from "ioredis";
 
-@Injectable()
+const redis = new Redis({
+  host: process.env.REDIS_HOST || "localhost",
+  port: parseInt(process.env.REDIS_PORT || "6379"),
+});
+
 export class ProductService {
-  constructor(
-    @Inject(CACHE_MANAGER) private cacheManager: Cache,
-    private productRepository: Repository<Product>
-  ) {}
+  private redis = redis;
 
   async findById(id: number): Promise<Product> {
     const cacheKey = `product:${id}`;
 
     // Check cache
-    let product = await this.cacheManager.get<Product>(cacheKey);
+    const cached = await this.redis.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
 
-    if (!product) {
-      // Query database
-      product = await this.productRepository.findOne({ where: { id } });
+    // Query database (using your ORM/query builder)
+    const product = await this.findProductInDatabase(id);
 
+    if (product) {
       // Store in cache for 5 minutes
-      await this.cacheManager.set(cacheKey, product, 300);
+      await this.redis.setex(cacheKey, 300, JSON.stringify(product));
     }
 
     return product;
+  }
+
+  private async findProductInDatabase(id: number): Promise<Product> {
+    // Implementation depends on your database setup
+    // Example with TypeORM: AppDataSource.getRepository(Product).findOne({ where: { id } })
+    // Example with Prisma: prisma.product.findUnique({ where: { id } })
+    throw new Error("Implement database query");
   }
 }
 ```

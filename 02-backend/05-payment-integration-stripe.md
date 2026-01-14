@@ -2,836 +2,719 @@
 
 ## Overview
 
-Stripe is the leading payment processing platform for online businesses. This tutorial covers implementing one-time payments, subscriptions, webhooks, and security best practices for handling payments in your application.
+Stripe is the leading payment processor for online businesses. This guide covers integrating Stripe with Express.js to handle payments, subscriptions, webhooks, and secure payment flows with TypeScript.
 
-## Practical Use Cases
-
-- **E-commerce**: Product purchases and checkouts
-- **SaaS subscriptions**: Monthly/annual billing
-- **Marketplaces**: Platform fees and payouts
-- **Donations**: One-time or recurring contributions
-- **On-demand services**: Pay-per-use pricing
-
-## Step-by-Step Implementation
-
-### 1. Setting Up Stripe with NestJS
+## Setup
 
 ```bash
-npm install stripe @nestjs/config
+npm install stripe
+npm install -D @types/stripe
 ```
 
 ```typescript
-// payments/payments.module.ts
-import { Module } from "@nestjs/common";
-import { ConfigModule } from "@nestjs/config";
-import { PaymentsController } from "./payments.controller";
-import { PaymentsService } from "./payments.service";
-import { StripeService } from "./stripe.service";
-import { WebhookController } from "./webhook.controller";
+// src/config/stripe.ts
+import Stripe from 'stripe';
 
-@Module({
-  imports: [ConfigModule],
-  controllers: [PaymentsController, WebhookController],
-  providers: [PaymentsService, StripeService],
-  exports: [PaymentsService, StripeService],
-})
-export class PaymentsModule {}
+if (!process.env.STRIPE_SECRET_KEY) {
+  throw new Error('STRIPE_SECRET_KEY is required');
+}
 
-// payments/stripe.service.ts
-import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import Stripe from "stripe";
+export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2024-11-20.acacia',
+  typescript: true,
+});
 
-@Injectable()
-export class StripeService {
-  public readonly stripe: Stripe;
+export default stripe;
+```
 
-  constructor(private configService: ConfigService) {
-    this.stripe = new Stripe(this.configService.get("STRIPE_SECRET_KEY"), {
-      apiVersion: "2023-10-16",
-    });
-  }
+```env
+# .env
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PUBLISHABLE_KEY=pk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+```
 
-  // Customer Management
-  async createCustomer(email: string, name?: string): Promise<Stripe.Customer> {
-    return this.stripe.customers.create({
-      email,
-      name,
-    });
-  }
+## Payment Intents (One-time Payments)
 
-  async getCustomer(customerId: string): Promise<Stripe.Customer> {
-    return this.stripe.customers.retrieve(
-      customerId
-    ) as Promise<Stripe.Customer>;
-  }
+### 1. Payment Service
 
-  async updateCustomer(
-    customerId: string,
-    data: Stripe.CustomerUpdateParams
-  ): Promise<Stripe.Customer> {
-    return this.stripe.customers.update(customerId, data);
-  }
+```typescript
+// src/services/payment.service.ts
+import stripe from '../config/stripe';
+import { AppError } from '../utils/AppError';
+import { prisma } from '../config/database';
 
-  // Payment Intent (One-time payments)
+export class PaymentService {
   async createPaymentIntent(
     amount: number,
-    currency: string = "usd",
-    customerId?: string
-  ): Promise<Stripe.PaymentIntent> {
-    return this.stripe.paymentIntents.create({
+    currency: string = 'usd',
+    userId: string,
+    metadata?: Record<string, string>
+  ) {
+    const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(amount * 100), // Convert to cents
       currency,
-      customer: customerId,
-      automatic_payment_methods: {
-        enabled: true,
+      metadata: {
+        userId,
+        ...metadata,
       },
     });
-  }
 
-  async confirmPaymentIntent(
-    paymentIntentId: string
-  ): Promise<Stripe.PaymentIntent> {
-    return this.stripe.paymentIntents.confirm(paymentIntentId);
-  }
-
-  // Setup Intent (Save card for future use)
-  async createSetupIntent(customerId: string): Promise<Stripe.SetupIntent> {
-    return this.stripe.setupIntents.create({
-      customer: customerId,
-      payment_method_types: ["card"],
-    });
-  }
-
-  // Payment Methods
-  async attachPaymentMethod(
-    paymentMethodId: string,
-    customerId: string
-  ): Promise<Stripe.PaymentMethod> {
-    return this.stripe.paymentMethods.attach(paymentMethodId, {
-      customer: customerId,
-    });
-  }
-
-  async setDefaultPaymentMethod(
-    customerId: string,
-    paymentMethodId: string
-  ): Promise<Stripe.Customer> {
-    return this.stripe.customers.update(customerId, {
-      invoice_settings: {
-        default_payment_method: paymentMethodId,
+    await prisma.payment.create({
+      data: {
+        userId,
+        stripePaymentIntentId: paymentIntent.id,
+        amount,
+        currency,
+        status: paymentIntent.status,
       },
     });
-  }
 
-  async listPaymentMethods(
-    customerId: string
-  ): Promise<Stripe.PaymentMethod[]> {
-    const paymentMethods = await this.stripe.paymentMethods.list({
-      customer: customerId,
-      type: "card",
-    });
-    return paymentMethods.data;
-  }
-
-  // Subscriptions
-  async createSubscription(
-    customerId: string,
-    priceId: string,
-    trialDays?: number
-  ): Promise<Stripe.Subscription> {
-    const subscriptionData: Stripe.SubscriptionCreateParams = {
-      customer: customerId,
-      items: [{ price: priceId }],
-      payment_behavior: "default_incomplete",
-      expand: ["latest_invoice.payment_intent"],
+    return {
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
     };
-
-    if (trialDays) {
-      subscriptionData.trial_period_days = trialDays;
-    }
-
-    return this.stripe.subscriptions.create(subscriptionData);
   }
 
-  async cancelSubscription(
-    subscriptionId: string,
-    immediately: boolean = false
-  ): Promise<Stripe.Subscription> {
-    if (immediately) {
-      return this.stripe.subscriptions.cancel(subscriptionId);
+  async confirmPayment(paymentIntentId: string) {
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent.status === 'succeeded') {
+      await prisma.payment.update({
+        where: { stripePaymentIntentId: paymentIntentId },
+        data: { status: 'succeeded', paidAt: new Date() },
+      });
     }
-    return this.stripe.subscriptions.update(subscriptionId, {
-      cancel_at_period_end: true,
+
+    return paymentIntent;
+  }
+
+  async getPaymentHistory(userId: string) {
+    return prisma.payment.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
-  async updateSubscription(
-    subscriptionId: string,
-    newPriceId: string
-  ): Promise<Stripe.Subscription> {
-    const subscription = await this.stripe.subscriptions.retrieve(
-      subscriptionId
+  async refundPayment(paymentIntentId: string, amount?: number) {
+    const payment = await prisma.payment.findUnique({
+      where: { stripePaymentIntentId: paymentIntentId },
+    });
+
+    if (!payment) {
+      throw new AppError('Payment not found', 404);
+    }
+
+    const refund = await stripe.refunds.create({
+      payment_intent: paymentIntentId,
+      amount: amount ? Math.round(amount * 100) : undefined,
+    });
+
+    await prisma.payment.update({
+      where: { stripePaymentIntentId: paymentIntentId },
+      data: { status: 'refunded', refundedAt: new Date() },
+    });
+
+    return refund;
+  }
+}
+
+export default new PaymentService();
+```
+
+### 2. Payment Controller
+
+```typescript
+// src/controllers/payment.controller.ts
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import paymentService from '../services/payment.service';
+
+export class PaymentController {
+  createPaymentIntent = asyncHandler(async (req: Request, res: Response) => {
+    const { amount, currency, metadata } = req.body;
+    const userId = req.user!.id;
+
+    const result = await paymentService.createPaymentIntent(
+      amount,
+      currency,
+      userId,
+      metadata
     );
 
-    return this.stripe.subscriptions.update(subscriptionId, {
+    res.json({
+      success: true,
+      data: result,
+    });
+  });
+
+  confirmPayment = asyncHandler(async (req: Request, res: Response) => {
+    const { paymentIntentId } = req.params;
+
+    const paymentIntent = await paymentService.confirmPayment(paymentIntentId);
+
+    res.json({
+      success: true,
+      data: paymentIntent,
+    });
+  });
+
+  getPaymentHistory = asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+
+    const payments = await paymentService.getPaymentHistory(userId);
+
+    res.json({
+      success: true,
+      data: payments,
+    });
+  });
+
+  refundPayment = asyncHandler(async (req: Request, res: Response) => {
+    const { paymentIntentId } = req.params;
+    const { amount } = req.body;
+
+    const refund = await paymentService.refundPayment(paymentIntentId, amount);
+
+    res.json({
+      success: true,
+      data: refund,
+    });
+  });
+}
+
+export default new PaymentController();
+```
+
+## Subscriptions
+
+### 1. Subscription Service
+
+```typescript
+// src/services/subscription.service.ts
+import stripe from '../config/stripe';
+import { prisma } from '../config/database';
+import { AppError } from '../utils/AppError';
+
+export class SubscriptionService {
+  async createCustomer(userId: string, email: string, name?: string) {
+    const existingCustomer = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { stripeCustomerId: true },
+    });
+
+    if (existingCustomer?.stripeCustomerId) {
+      return existingCustomer.stripeCustomerId;
+    }
+
+    const customer = await stripe.customers.create({
+      email,
+      name,
+      metadata: { userId },
+    });
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { stripeCustomerId: customer.id },
+    });
+
+    return customer.id;
+  }
+
+  async createSubscription(
+    userId: string,
+    priceId: string,
+    paymentMethodId?: string
+  ) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user?.stripeCustomerId) {
+      throw new AppError('Customer not found', 404);
+    }
+
+    if (paymentMethodId) {
+      await stripe.paymentMethods.attach(paymentMethodId, {
+        customer: user.stripeCustomerId,
+      });
+
+      await stripe.customers.update(user.stripeCustomerId, {
+        invoice_settings: {
+          default_payment_method: paymentMethodId,
+        },
+      });
+    }
+
+    const subscription = await stripe.subscriptions.create({
+      customer: user.stripeCustomerId,
+      items: [{ price: priceId }],
+      payment_behavior: 'default_incomplete',
+      payment_settings: { save_default_payment_method: 'on_subscription' },
+      expand: ['latest_invoice.payment_intent'],
+    });
+
+    await prisma.subscription.create({
+      data: {
+        userId,
+        stripeSubscriptionId: subscription.id,
+        stripePriceId: priceId,
+        status: subscription.status,
+        currentPeriodStart: new Date(subscription.current_period_start * 1000),
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+      },
+    });
+
+    return subscription;
+  }
+
+  async cancelSubscription(subscriptionId: string, immediately: boolean = false) {
+    const subscription = await stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: !immediately,
+    });
+
+    if (immediately) {
+      await stripe.subscriptions.cancel(subscriptionId);
+    }
+
+    await prisma.subscription.update({
+      where: { stripeSubscriptionId: subscriptionId },
+      data: {
+        status: immediately ? 'canceled' : 'active',
+        cancelAt: immediately ? new Date() : new Date(subscription.cancel_at! * 1000),
+      },
+    });
+
+    return subscription;
+  }
+
+  async updateSubscription(subscriptionId: string, newPriceId: string) {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+    const updated = await stripe.subscriptions.update(subscriptionId, {
       items: [
         {
           id: subscription.items.data[0].id,
           price: newPriceId,
         },
       ],
-      proration_behavior: "create_prorations",
+      proration_behavior: 'always_invoice',
     });
-  }
 
-  // Refunds
-  async createRefund(
-    paymentIntentId: string,
-    amount?: number
-  ): Promise<Stripe.Refund> {
-    const refundData: Stripe.RefundCreateParams = {
-      payment_intent: paymentIntentId,
-    };
-
-    if (amount) {
-      refundData.amount = Math.round(amount * 100);
-    }
-
-    return this.stripe.refunds.create(refundData);
-  }
-
-  // Invoices
-  async getInvoice(invoiceId: string): Promise<Stripe.Invoice> {
-    return this.stripe.invoices.retrieve(invoiceId);
-  }
-
-  async listInvoices(customerId: string): Promise<Stripe.Invoice[]> {
-    const invoices = await this.stripe.invoices.list({
-      customer: customerId,
-      limit: 100,
+    await prisma.subscription.update({
+      where: { stripeSubscriptionId: subscriptionId },
+      data: { stripePriceId: newPriceId },
     });
-    return invoices.data;
+
+    return updated;
   }
 
-  // Products & Prices
-  async createProduct(
-    name: string,
-    description?: string
-  ): Promise<Stripe.Product> {
-    return this.stripe.products.create({
-      name,
-      description,
+  async getSubscription(userId: string) {
+    return prisma.subscription.findFirst({
+      where: { userId, status: { in: ['active', 'trialing'] } },
     });
-  }
-
-  async createPrice(
-    productId: string,
-    amount: number,
-    currency: string = "usd",
-    recurring?: { interval: "month" | "year" }
-  ): Promise<Stripe.Price> {
-    const priceData: Stripe.PriceCreateParams = {
-      product: productId,
-      unit_amount: Math.round(amount * 100),
-      currency,
-    };
-
-    if (recurring) {
-      priceData.recurring = recurring;
-    }
-
-    return this.stripe.prices.create(priceData);
   }
 }
+
+export default new SubscriptionService();
 ```
 
-### 2. Payment Service Layer
+### 2. Subscription Controller
 
 ```typescript
-// payments/payments.service.ts
-import { Injectable, BadRequestException } from "@nestjs/common";
-import { StripeService } from "./stripe.service";
-import { UsersService } from "../users/users.service";
-import Stripe from "stripe";
+// src/controllers/subscription.controller.ts
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import subscriptionService from '../services/subscription.service';
 
-@Injectable()
-export class PaymentsService {
-  constructor(
-    private stripeService: StripeService,
-    private usersService: UsersService
-  ) {}
+export class SubscriptionController {
+  createSubscription = asyncHandler(async (req: Request, res: Response) => {
+    const { priceId, paymentMethodId } = req.body;
+    const userId = req.user!.id;
 
-  async createCheckoutSession(
-    userId: string,
-    priceId: string,
-    successUrl: string,
-    cancelUrl: string
-  ) {
-    const user = await this.usersService.findOne(userId);
+    const subscription = await subscriptionService.createSubscription(
+      userId,
+      priceId,
+      paymentMethodId
+    );
 
-    // Get or create Stripe customer
-    let customerId = user.stripeCustomerId;
-    if (!customerId) {
-      const customer = await this.stripeService.createCustomer(
-        user.email,
-        `${user.firstName} ${user.lastName}`
-      );
-      customerId = customer.id;
-      await this.usersService.update(userId, { stripeCustomerId: customerId });
-    }
-
-    // Create checkout session
-    const session = await this.stripeService.stripe.checkout.sessions.create({
-      customer: customerId,
-      payment_method_types: ["card"],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-      mode: "payment",
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      metadata: {
-        userId,
-      },
+    res.json({
+      success: true,
+      data: subscription,
     });
+  });
 
-    return { sessionId: session.id, url: session.url };
-  }
+  cancelSubscription = asyncHandler(async (req: Request, res: Response) => {
+    const { subscriptionId } = req.params;
+    const { immediately } = req.body;
 
-  async createSubscriptionCheckout(
-    userId: string,
-    priceId: string,
-    trialDays?: number
-  ) {
-    const user = await this.usersService.findOne(userId);
-
-    let customerId = user.stripeCustomerId;
-    if (!customerId) {
-      const customer = await this.stripeService.createCustomer(user.email);
-      customerId = customer.id;
-      await this.usersService.update(userId, { stripeCustomerId: customerId });
-    }
-
-    const sessionData: Stripe.Checkout.SessionCreateParams = {
-      customer: customerId,
-      payment_method_types: ["card"],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-      mode: "subscription",
-      success_url: `${process.env.FRONTEND_URL}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/subscription/cancel`,
-      metadata: {
-        userId,
-      },
-    };
-
-    if (trialDays) {
-      sessionData.subscription_data = {
-        trial_period_days: trialDays,
-      };
-    }
-
-    const session = await this.stripeService.stripe.checkout.sessions.create(
-      sessionData
-    );
-
-    return { sessionId: session.id, url: session.url };
-  }
-
-  async createPaymentIntent(userId: string, amount: number) {
-    const user = await this.usersService.findOne(userId);
-
-    if (!user.stripeCustomerId) {
-      throw new BadRequestException("No payment method on file");
-    }
-
-    const paymentIntent = await this.stripeService.createPaymentIntent(
-      amount,
-      "usd",
-      user.stripeCustomerId
-    );
-
-    return {
-      clientSecret: paymentIntent.client_secret,
-    };
-  }
-
-  async cancelSubscription(userId: string, immediately: boolean = false) {
-    const user = await this.usersService.findOne(userId);
-
-    if (!user.subscriptionId) {
-      throw new BadRequestException("No active subscription");
-    }
-
-    const subscription = await this.stripeService.cancelSubscription(
-      user.subscriptionId,
+    const subscription = await subscriptionService.cancelSubscription(
+      subscriptionId,
       immediately
     );
 
-    await this.usersService.update(userId, {
-      subscriptionStatus: immediately ? "canceled" : "canceling",
+    res.json({
+      success: true,
+      data: subscription,
     });
+  });
 
-    return subscription;
-  }
+  updateSubscription = asyncHandler(async (req: Request, res: Response) => {
+    const { subscriptionId } = req.params;
+    const { priceId } = req.body;
 
-  async updateSubscription(userId: string, newPriceId: string) {
-    const user = await this.usersService.findOne(userId);
-
-    if (!user.subscriptionId) {
-      throw new BadRequestException("No active subscription");
-    }
-
-    const subscription = await this.stripeService.updateSubscription(
-      user.subscriptionId,
-      newPriceId
+    const subscription = await subscriptionService.updateSubscription(
+      subscriptionId,
+      priceId
     );
 
-    return subscription;
-  }
+    res.json({
+      success: true,
+      data: subscription,
+    });
+  });
 
-  async listPaymentMethods(userId: string) {
-    const user = await this.usersService.findOne(userId);
+  getSubscription = asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user!.id;
 
-    if (!user.stripeCustomerId) {
-      return [];
-    }
+    const subscription = await subscriptionService.getSubscription(userId);
 
-    return this.stripeService.listPaymentMethods(user.stripeCustomerId);
-  }
-
-  async getInvoices(userId: string) {
-    const user = await this.usersService.findOne(userId);
-
-    if (!user.stripeCustomerId) {
-      return [];
-    }
-
-    return this.stripeService.listInvoices(user.stripeCustomerId);
-  }
-
-  async refundPayment(paymentIntentId: string, amount?: number) {
-    return this.stripeService.createRefund(paymentIntentId, amount);
-  }
+    res.json({
+      success: true,
+      data: subscription,
+    });
+  });
 }
 
-// payments/payments.controller.ts
-import {
-  Controller,
-  Post,
-  Get,
-  Body,
-  UseGuards,
-  Patch,
-  Delete,
-} from "@nestjs/common";
-import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
-import { PaymentsService } from "./payments.service";
-import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
-import { CurrentUser } from "../auth/decorators/current-user.decorator";
-
-@ApiTags("payments")
-@Controller("payments")
-@UseGuards(JwtAuthGuard)
-@ApiBearerAuth()
-export class PaymentsController {
-  constructor(private paymentsService: PaymentsService) {}
-
-  @Post("checkout")
-  @ApiOperation({ summary: "Create checkout session for one-time payment" })
-  createCheckout(
-    @CurrentUser("id") userId: string,
-    @Body() body: { priceId: string; successUrl: string; cancelUrl: string }
-  ) {
-    return this.paymentsService.createCheckoutSession(
-      userId,
-      body.priceId,
-      body.successUrl,
-      body.cancelUrl
-    );
-  }
-
-  @Post("subscription/checkout")
-  @ApiOperation({ summary: "Create subscription checkout" })
-  createSubscriptionCheckout(
-    @CurrentUser("id") userId: string,
-    @Body() body: { priceId: string; trialDays?: number }
-  ) {
-    return this.paymentsService.createSubscriptionCheckout(
-      userId,
-      body.priceId,
-      body.trialDays
-    );
-  }
-
-  @Post("payment-intent")
-  @ApiOperation({ summary: "Create payment intent" })
-  createPaymentIntent(
-    @CurrentUser("id") userId: string,
-    @Body() body: { amount: number }
-  ) {
-    return this.paymentsService.createPaymentIntent(userId, body.amount);
-  }
-
-  @Delete("subscription")
-  @ApiOperation({ summary: "Cancel subscription" })
-  cancelSubscription(
-    @CurrentUser("id") userId: string,
-    @Body() body: { immediately?: boolean }
-  ) {
-    return this.paymentsService.cancelSubscription(userId, body.immediately);
-  }
-
-  @Patch("subscription")
-  @ApiOperation({ summary: "Update subscription plan" })
-  updateSubscription(
-    @CurrentUser("id") userId: string,
-    @Body() body: { newPriceId: string }
-  ) {
-    return this.paymentsService.updateSubscription(userId, body.newPriceId);
-  }
-
-  @Get("payment-methods")
-  @ApiOperation({ summary: "List saved payment methods" })
-  listPaymentMethods(@CurrentUser("id") userId: string) {
-    return this.paymentsService.listPaymentMethods(userId);
-  }
-
-  @Get("invoices")
-  @ApiOperation({ summary: "Get invoice history" })
-  getInvoices(@CurrentUser("id") userId: string) {
-    return this.paymentsService.getInvoices(userId);
-  }
-}
+export default new SubscriptionController();
 ```
 
-### 3. Webhook Handler (Critical!)
+## Webhooks
+
+### 1. Webhook Handler
 
 ```typescript
-// payments/webhook.controller.ts
-import {
-  Controller,
-  Post,
-  Headers,
-  RawBodyRequest,
-  Req,
-  BadRequestException,
-} from "@nestjs/common";
-import { Request } from "express";
-import { StripeService } from "./stripe.service";
-import { UsersService } from "../users/users.service";
-import Stripe from "stripe";
+// src/controllers/webhook.controller.ts
+import { Request, Response } from 'express';
+import stripe from '../config/stripe';
+import { prisma } from '../config/database';
 
-@Controller("webhooks")
 export class WebhookController {
-  constructor(
-    private stripeService: StripeService,
-    private usersService: UsersService
-  ) {}
+  handleStripeWebhook = async (req: Request, res: Response) => {
+    const sig = req.headers['stripe-signature'];
 
-  @Post("stripe")
-  async handleWebhook(
-    @Headers("stripe-signature") signature: string,
-    @Req() request: RawBodyRequest<Request>
-  ) {
-    if (!signature) {
-      throw new BadRequestException("Missing stripe-signature header");
+    if (!sig) {
+      return res.status(400).send('No signature');
     }
 
-    let event: Stripe.Event;
+    let event;
 
     try {
-      event = this.stripeService.stripe.webhooks.constructEvent(
-        request.rawBody,
-        signature,
-        process.env.STRIPE_WEBHOOK_SECRET
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET!
       );
-    } catch (err) {
-      throw new BadRequestException(`Webhook Error: ${err.message}`);
+    } catch (err: any) {
+      return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Handle the event
-    switch (event.type) {
-      case "checkout.session.completed":
-        await this.handleCheckoutCompleted(event.data.object);
-        break;
+    try {
+      switch (event.type) {
+        case 'payment_intent.succeeded':
+          await this.handlePaymentIntentSucceeded(event.data.object);
+          break;
 
-      case "customer.subscription.created":
-      case "customer.subscription.updated":
-        await this.handleSubscriptionUpdate(event.data.object);
-        break;
+        case 'payment_intent.payment_failed':
+          await this.handlePaymentIntentFailed(event.data.object);
+          break;
 
-      case "customer.subscription.deleted":
-        await this.handleSubscriptionDeleted(event.data.object);
-        break;
+        case 'customer.subscription.created':
+        case 'customer.subscription.updated':
+          await this.handleSubscriptionUpdate(event.data.object);
+          break;
 
-      case "invoice.payment_succeeded":
-        await this.handleInvoicePaymentSucceeded(event.data.object);
-        break;
+        case 'customer.subscription.deleted':
+          await this.handleSubscriptionDeleted(event.data.object);
+          break;
 
-      case "invoice.payment_failed":
-        await this.handleInvoicePaymentFailed(event.data.object);
-        break;
+        case 'invoice.payment_succeeded':
+          await this.handleInvoicePaymentSucceeded(event.data.object);
+          break;
 
-      case "payment_intent.succeeded":
-        await this.handlePaymentIntentSucceeded(event.data.object);
-        break;
+        case 'invoice.payment_failed':
+          await this.handleInvoicePaymentFailed(event.data.object);
+          break;
 
-      case "payment_intent.payment_failed":
-        await this.handlePaymentIntentFailed(event.data.object);
-        break;
+        default:
+          console.log(`Unhandled event type: ${event.type}`);
+      }
 
-      default:
-        console.log(`Unhandled event type: ${event.type}`);
+      res.json({ received: true });
+    } catch (error) {
+      console.error('Webhook handler error:', error);
+      res.status(500).send('Webhook handler failed');
     }
-
-    return { received: true };
-  }
-
-  private async handleCheckoutCompleted(session: Stripe.Checkout.Session) {
-    const userId = session.metadata?.userId;
-    if (!userId) return;
-
-    // Update user with payment info
-    await this.usersService.update(userId, {
-      stripeCustomerId: session.customer as string,
-      hasPaid: true,
-    });
-
-    // If it's a subscription
-    if (session.subscription) {
-      await this.usersService.update(userId, {
-        subscriptionId: session.subscription as string,
-        subscriptionStatus: "active",
-      });
-    }
-  }
-
-  private async handleSubscriptionUpdate(subscription: Stripe.Subscription) {
-    const customerId = subscription.customer as string;
-    const user = await this.usersService.findByStripeCustomerId(customerId);
-
-    if (user) {
-      await this.usersService.update(user.id, {
-        subscriptionId: subscription.id,
-        subscriptionStatus: subscription.status,
-        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-      });
-    }
-  }
-
-  private async handleSubscriptionDeleted(subscription: Stripe.Subscription) {
-    const customerId = subscription.customer as string;
-    const user = await this.usersService.findByStripeCustomerId(customerId);
-
-    if (user) {
-      await this.usersService.update(user.id, {
-        subscriptionId: null,
-        subscriptionStatus: "canceled",
-      });
-    }
-  }
-
-  private async handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
-    const customerId = invoice.customer as string;
-    const user = await this.usersService.findByStripeCustomerId(customerId);
-
-    if (user) {
-      // Send receipt email
-      // Update payment history
-      console.log(`Payment succeeded for user ${user.id}`);
-    }
-  }
-
-  private async handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
-    const customerId = invoice.customer as string;
-    const user = await this.usersService.findByStripeCustomerId(customerId);
-
-    if (user) {
-      // Send payment failed email
-      // Alert user to update payment method
-      console.log(`Payment failed for user ${user.id}`);
-    }
-  }
-
-  private async handlePaymentIntentSucceeded(
-    paymentIntent: Stripe.PaymentIntent
-  ) {
-    // Handle successful one-time payment
-    console.log(`PaymentIntent ${paymentIntent.id} succeeded`);
-  }
-
-  private async handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
-    // Handle failed payment
-    console.log(`PaymentIntent ${paymentIntent.id} failed`);
-  }
-}
-
-// main.ts - IMPORTANT: Add raw body parser for webhooks
-import { NestFactory } from "@nestjs/core";
-import { AppModule } from "./app.module";
-import { json } from "express";
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  // Raw body for Stripe webhooks
-  app.use(
-    "/webhooks/stripe",
-    json({ verify: (req, res, buf) => (req["rawBody"] = buf) })
-  );
-
-  await app.listen(3000);
-}
-bootstrap();
-```
-
-### 4. Frontend Integration (React Example)
-
-```typescript
-// React component for payment
-import { loadStripe } from "@stripe/stripe-js";
-import {
-  Elements,
-  PaymentElement,
-  useStripe,
-  useElements,
-} from "@stripe/react-stripe-js";
-
-const stripePromise = loadStripe("pk_test_...");
-
-function CheckoutForm() {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!stripe || !elements) return;
-
-    setLoading(true);
-
-    const { error } = await stripe.confirmPayment({
-      elements,
-      confirmParams: {
-        return_url: `${window.location.origin}/payment/success`,
-      },
-    });
-
-    if (error) {
-      console.error(error);
-    }
-
-    setLoading(false);
   };
 
-  return (
-    <form onSubmit={handleSubmit}>
-      <PaymentElement />
-      <button disabled={!stripe || loading}>
-        {loading ? "Processing..." : "Pay Now"}
-      </button>
-    </form>
-  );
+  private async handlePaymentIntentSucceeded(paymentIntent: any) {
+    await prisma.payment.update({
+      where: { stripePaymentIntentId: paymentIntent.id },
+      data: {
+        status: 'succeeded',
+        paidAt: new Date(),
+      },
+    });
+  }
+
+  private async handlePaymentIntentFailed(paymentIntent: any) {
+    await prisma.payment.update({
+      where: { stripePaymentIntentId: paymentIntent.id },
+      data: { status: 'failed' },
+    });
+  }
+
+  private async handleSubscriptionUpdate(subscription: any) {
+    await prisma.subscription.upsert({
+      where: { stripeSubscriptionId: subscription.id },
+      update: {
+        status: subscription.status,
+        currentPeriodStart: new Date(subscription.current_period_start * 1000),
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+      },
+      create: {
+        userId: subscription.metadata.userId,
+        stripeSubscriptionId: subscription.id,
+        stripePriceId: subscription.items.data[0].price.id,
+        status: subscription.status,
+        currentPeriodStart: new Date(subscription.current_period_start * 1000),
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+      },
+    });
+  }
+
+  private async handleSubscriptionDeleted(subscription: any) {
+    await prisma.subscription.update({
+      where: { stripeSubscriptionId: subscription.id },
+      data: {
+        status: 'canceled',
+        cancelAt: new Date(),
+      },
+    });
+  }
+
+  private async handleInvoicePaymentSucceeded(invoice: any) {
+    // Update subscription or send receipt email
+    console.log('Invoice paid:', invoice.id);
+  }
+
+  private async handleInvoicePaymentFailed(invoice: any) {
+    // Notify user of payment failure
+    console.log('Invoice payment failed:', invoice.id);
+  }
 }
 
-// Main component
-function CheckoutPage() {
-  const [clientSecret, setClientSecret] = useState("");
+export default new WebhookController();
+```
 
-  useEffect(() => {
-    // Get client secret from backend
-    fetch("/api/payments/payment-intent", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount: 50.0 }),
-    })
-      .then((res) => res.json())
-      .then((data) => setClientSecret(data.clientSecret));
-  }, []);
+### 2. Webhook Route (Raw Body Parser)
 
-  return (
-    <Elements stripe={stripePromise} options={{ clientSecret }}>
-      <CheckoutForm />
-    </Elements>
-  );
+```typescript
+// src/routes/webhook.routes.ts
+import { Router } from 'express';
+import express from 'express';
+import webhookController from '../controllers/webhook.controller';
+
+const router = Router();
+
+// Stripe requires raw body for webhook signature verification
+router.post(
+  '/stripe',
+  express.raw({ type: 'application/json' }),
+  webhookController.handleStripeWebhook
+);
+
+export default router;
+```
+
+```typescript
+// src/server.ts - Important: raw body parser before JSON parser
+import express from 'express';
+import webhookRoutes from './routes/webhook.routes';
+
+const app = express();
+
+// Webhook routes MUST come before express.json()
+app.use('/api/v1/webhooks', webhookRoutes);
+
+// Then add JSON parser for other routes
+app.use(express.json());
+
+// Other routes...
+```
+
+## Payment Routes
+
+```typescript
+// src/routes/payment.routes.ts
+import { Router } from 'express';
+import paymentController from '../controllers/payment.controller';
+import subscriptionController from '../controllers/subscription.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+router.use(authenticate);
+
+// One-time payments
+router.post('/payment-intent', paymentController.createPaymentIntent);
+router.get('/payment-intent/:paymentIntentId', paymentController.confirmPayment);
+router.get('/history', paymentController.getPaymentHistory);
+router.post('/refund/:paymentIntentId', paymentController.refundPayment);
+
+// Subscriptions
+router.post('/subscription', subscriptionController.createSubscription);
+router.get('/subscription', subscriptionController.getSubscription);
+router.patch('/subscription/:subscriptionId', subscriptionController.updateSubscription);
+router.delete('/subscription/:subscriptionId', subscriptionController.cancelSubscription);
+
+export default router;
+```
+
+## Customer Portal
+
+```typescript
+// src/services/billing-portal.service.ts
+import stripe from '../config/stripe';
+import { prisma } from '../config/database';
+import { AppError } from '../utils/AppError';
+
+export class BillingPortalService {
+  async createPortalSession(userId: string, returnUrl: string) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user?.stripeCustomerId) {
+      throw new AppError('No customer found', 404);
+    }
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: user.stripeCustomerId,
+      return_url: returnUrl,
+    });
+
+    return session.url;
+  }
 }
+
+export default new BillingPortalService();
+```
+
+## Testing
+
+```typescript
+// src/__tests__/payment.test.ts
+import request from 'supertest';
+import app from '../server';
+import stripe from '../config/stripe';
+
+describe('Payment Integration', () => {
+  let authToken: string;
+
+  beforeAll(async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'test@example.com', password: 'password123' });
+    authToken = res.body.data.accessToken;
+  });
+
+  describe('POST /api/v1/payments/payment-intent', () => {
+    it('should create a payment intent', async () => {
+      const res = await request(app)
+        .post('/api/v1/payments/payment-intent')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({
+          amount: 99.99,
+          currency: 'usd',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveProperty('clientSecret');
+      expect(res.body.data).toHaveProperty('paymentIntentId');
+    });
+  });
+
+  describe('POST /api/v1/payments/subscription', () => {
+    it('should create a subscription', async () => {
+      const testPriceId = 'price_test123';
+
+      const res = await request(app)
+        .post('/api/v1/payments/subscription')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({
+          priceId: testPriceId,
+          paymentMethodId: 'pm_card_visa',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveProperty('id');
+      expect(res.body.data.status).toBeDefined();
+    });
+  });
+
+  describe('Webhook', () => {
+    it('should handle payment_intent.succeeded event', async () => {
+      const event = stripe.webhooks.generateTestHeaderString({
+        payload: JSON.stringify({
+          type: 'payment_intent.succeeded',
+          data: { object: { id: 'pi_test123' } },
+        }),
+        secret: process.env.STRIPE_WEBHOOK_SECRET!,
+      });
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/stripe')
+        .set('stripe-signature', event)
+        .send({ type: 'payment_intent.succeeded' });
+
+      expect(res.status).toBe(200);
+    });
+  });
+});
 ```
 
 ## Best Practices
 
-### 1. Security
+1. **Never store card details** - let Stripe handle it
+2. **Use payment intents** for better fraud prevention
+3. **Validate webhook signatures** to prevent spoofing
+4. **Handle idempotency** to prevent duplicate charges
+5. **Use metadata** to link payments to your data
+6. **Test with Stripe CLI** for webhook development
+7. **Implement retry logic** for failed payments
+8. **Store minimal payment data** - link via Stripe IDs
+9. **Use customer portal** for self-service billing
+10. **Monitor webhook delivery** in Stripe Dashboard
 
-```typescript
-// Always verify webhooks
-const event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
+## Security Checklist
 
-// Never trust client-side amount
-// Always calculate on server:
-const amount = calculateOrderAmount(items);
-
-// Use idempotency keys for safety
-await stripe.paymentIntents.create(
-  {
-    amount: 1000,
-    currency: "usd",
-  },
-  {
-    idempotencyKey: orderId,
-  }
-);
-```
-
-### 2. Error Handling
-
-```typescript
-try {
-  const paymentIntent = await stripe.paymentIntents.create({
-    amount: 1000,
-    currency: "usd",
-  });
-} catch (error) {
-  if (error.type === "StripeCardError") {
-    // Card was declined
-  } else if (error.type === "StripeInvalidRequestError") {
-    // Invalid parameters
-  } else {
-    // Other error
-  }
-}
-```
-
-### 3. Testing
-
-```typescript
-// Use test mode cards
-const TEST_CARDS = {
-  SUCCESS: "4242424242424242",
-  DECLINED: "4000000000000002",
-  REQUIRES_AUTH: "4000002500003155",
-};
-
-// Test webhooks with Stripe CLI
-// stripe listen --forward-to localhost:3000/webhooks/stripe
-```
+- ✅ Use HTTPS in production
+- ✅ Verify webhook signatures
+- ✅ Never log sensitive data
+- ✅ Keep API keys in environment variables
+- ✅ Use different keys for test/production
+- ✅ Implement rate limiting on payment endpoints
+- ✅ Validate amounts server-side
+- ✅ Use SCA-compliant payment methods
+- ✅ Handle 3D Secure authentication
+- ✅ Log all payment activities
 
 ## Key Takeaways
 
-1. **Use webhooks** - Critical for subscription updates
-2. **Validate everything** - Never trust client-side data
-3. **Handle failures** - Payment failures are common
-4. **Test thoroughly** - Use test mode extensively
-5. **Secure webhooks** - Verify webhook signatures
-6. **Idempotency** - Prevent duplicate charges
-7. **PCI compliance** - Never store card details
-8. **Monitor dashboard** - Watch for issues in Stripe dashboard
+1. **Payment Intents** are the modern way to accept payments
+2. **Subscriptions** automate recurring billing
+3. **Webhooks** keep your database in sync with Stripe
+4. **Raw body parser** is required for webhook verification
+5. **Stripe CLI** simplifies webhook testing
+6. **Customer Portal** reduces support burden
+7. **Metadata** links Stripe objects to your data
+8. **Test mode** allows safe development
 
-Stripe is powerful but requires careful implementation. Always handle webhooks properly and test all payment flows thoroughly!
+Stripe provides excellent documentation and test cards for development.
